@@ -7,5 +7,6 @@ requires-python = ">=3.12"
 dependencies = [
     "selenium>=4.27.1",
     "tqdm>=4.67.1",
+    "webdriver-manager>=4.0.2",
     "yt-dlp>=2024.12.23",
 ]
