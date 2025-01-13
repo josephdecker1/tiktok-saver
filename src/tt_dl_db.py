@@ -2,6 +2,8 @@ from yt_dlp import YoutubeDL
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import math
+import argparse
+from pathlib import Path
 import sqlite3
 from datetime import datetime
 import os
@@ -31,9 +33,9 @@ class ProgressBar:
             self.pbar.close()
             self.pbar = None
 
-def init_database():
+def init_database(db_user='user'):
     """Create the database and tables if they don't exist"""
-    conn = sqlite3.connect('tt_metadata.db')
+    conn = sqlite3.connect(f'tt_metadata_{db_user}.db')
     c = conn.cursor()
     
     c.execute('''
@@ -66,9 +68,9 @@ def init_database():
     conn.commit()
     return conn
 
-def download_and_store_video(url, output_path="outputs"):
-    os.makedirs(output_path, exist_ok=True)
-    conn = init_database()
+def download_and_store_video(url, output_path="outputs", db_user='user'):
+    # os.makedirs(output_path, exist_ok=True)
+    conn = init_database(db_user)
     c = conn.cursor()
 
     try:
@@ -161,7 +163,7 @@ def download_and_store_video(url, output_path="outputs"):
     finally:
         conn.close()
 
-def process_urls_parallel(urls, max_workers=5, batch_size=20):
+def process_urls_parallel(urls, output_dir, max_workers=5, batch_size=20, db_user='user'):
     # Split urls into batches
     batches = [urls[i:i + batch_size] for i in range(0, len(urls), batch_size)]
     print(f"Processing {len(urls)} URLs in {len(batches)} batches with {max_workers} workers")
@@ -171,7 +173,7 @@ def process_urls_parallel(urls, max_workers=5, batch_size=20):
         # Create a future for each batch
         futures = []
         for batch in batches:
-            future = executor.submit(process_batch, batch)
+            future = executor.submit(process_batch, batch, output_dir, db_user)
             futures.append(future)
         
         # Process completed batches
@@ -182,22 +184,37 @@ def process_urls_parallel(urls, max_workers=5, batch_size=20):
             except Exception as e:
                 print(f"Batch {i + 1} failed: {str(e)}")
 
-def process_batch(urls):
+def process_batch(urls, output_dir, db_user='user'):
     for url in urls:
         try:
             print(f"Processing: {url}")
-            download_and_store_video(url)
+            download_and_store_video(url, output_path=output_dir, db_user=db_user)
         except Exception as e:
             print(f"Failed to process {url}: {str(e)}")
 
 if __name__ == "__main__":
-    with open('tiktok_saved_videos.txt', 'r', encoding='utf-8') as f:
-        urls = [line.strip() for line in f if line.strip().rsplit("/")[-2] != "photo"]
 
-    print(f"Found {len(urls)} URLs to process")
-    
-    # Configure these values as needed
-    MAX_WORKERS = 5  # Number of simultaneous threads
-    BATCH_SIZE = 20  # URLs per batch
-    
-    process_urls_parallel(urls, MAX_WORKERS, BATCH_SIZE)
+    parser = argparse.ArgumentParser(description='Open TikTok profile page')
+    parser.add_argument('username', help='TikTok username (without @)')
+    args = parser.parse_args()
+
+    tiktok_dir = Path(Path.home() / "Downloads" / "TikTok")
+    txt_files = list(Path(Path.home() / "Downloads" / "TikTok").glob("*.txt"))
+
+    for x in txt_files:
+        with open(x, 'r', encoding='utf-8') as f:
+            urls = [line.strip() for line in f if line.strip().rsplit("/")[-2] != "photo"]
+
+        collection_dir = Path(tiktok_dir / x.name.split('.')[0])
+        print(x.name, collection_dir)
+
+        # with open('tiktok_saved_videos.txt', 'r', encoding='utf-8') as f:
+        #     urls = [line.strip() for line in f if line.strip().rsplit("/")[-2] != "photo"]
+
+        print(f"Found {len(urls)} URLs to process for {x.name} collection")
+        
+        # Configure these values as needed
+        MAX_WORKERS = 5  # Number of simultaneous threads
+        BATCH_SIZE = 20  # URLs per batch
+        
+        process_urls_parallel(urls, collection_dir, MAX_WORKERS, BATCH_SIZE, db_user=args.username)

@@ -1,16 +1,22 @@
 import platform
 from pathlib import Path
-
-print(platform.system())
-# print(Path.home() / "Downloads")
-# print(Path(__file__).resolve().parent / "src" / "collection_links_download.js")
-
-
-# data_dir = Path(__file__).resolve().parent / "data"
-# if not data_dir.exists():
-#     data_dir.mkdir()
+from shutil import rmtree
+from time import sleep
 
 txt_files = list(Path(Path.home() / "Downloads" / "TikTok").glob("*.txt"))
 
 for x in txt_files:
-    print(x)
+    print(x.name)
+    if ' ' in x.name or '/' in x.name:
+        print(f"found space in {x.name}")
+        x.rename(x.with_name(x.name.replace(' ', '-').replace("/", "-")))
+        print(f"renamed to {x.name}")
+    
+    # Collection folders
+    col = Path(Path.home() / "Downloads" / "TikTok" / x.name.split('.')[0])
+    if not col.exists():
+        col.mkdir()
+
+    with open(x, 'r', encoding='utf-8') as f:
+        for line in f:
+            print(line)

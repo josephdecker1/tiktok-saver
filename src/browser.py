@@ -11,7 +11,6 @@ from pathlib import Path
 import argparse
 import random
 import time
-import re
 import os
 
 def setup_chrome(download_dir=str(utils.get_downloads_dir("TikTok")), profile_name="Default"):
@@ -19,8 +18,16 @@ def setup_chrome(download_dir=str(utils.get_downloads_dir("TikTok")), profile_na
 
     chrome_data_path = str(utils.get_chrome_data_path())
     chrome_options = Options()
-    chrome_options.add_argument(f'--user-data-dir={chrome_data_path}')
-    chrome_options.add_argument(f'--profile-directory={profile_name}')
+    if platform.system() == "Windows":
+        chrome_options.add_argument(f'--user-data-dir={chrome_data_path}')
+        chrome_options.add_argument(f'--profile-directory={profile_name}')
+        chrome_options.add_argument("--start-maximized")
+    elif platform.system() == "Linux":
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
+        chrome_options.add_argument("--start-maximized")
+        chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+        chrome_options.add_argument("--disable-plugins-discovery")
 
     # Set download directory
     prefs = {
@@ -148,7 +155,9 @@ def main():
 
         driver.get(f"https://tiktok.com/@{args.username}")
         time.sleep(5)
-        driver.find_element(By.CSS_SELECTOR, "#main-content-others_homepage > div > div.css-833rgq-DivShareLayoutMain.ee7zj8d4 > div.css-1pbyc88-FeedTabWrapper.e1jjp0pq7 > div.css-1dw5iuh-DivVideoFeedTab.e1jjp0pq0 > p.css-1wncxfu-PFavorite.e1jjp0pq3").click()
+        # driver.find_element(By.CSS_SELECTOR, "#main-content-others_homepage > div > div.css-833rgq-DivShareLayoutMain.ee7zj8d4 > div.css-1pbyc88-FeedTabWrapper.e1jjp0pq7 > div.css-1dw5iuh-DivVideoFeedTab.e1jjp0pq0 > p.css-1wncxfu-PFavorite.e1jjp0pq3").click()
+        driver.find_element(By.XPATH, "/html/body/div[1]/div[2]/div[2]/div/div/div[2]/div[1]/div[1]/p[3]").click()
+        print()
         time.sleep(3)
         driver.execute_script("""
     const el = document.querySelector("#collections");
@@ -163,6 +172,11 @@ def main():
         for collection in collections:
             download_collection(driver, collection)
         print("Downloads complete!!")
+        # rename any files that have a whitespace in the name
+        # Only rename specific file types (e.g., .txt files)
+        for path in download_path.rglob('*.txt'):
+            if ' ' in path.name:
+                path.rename(path.with_name(path.name.replace(' ', '_')))
         time.sleep(6)
     else:
         print("Login failed or timed out")
