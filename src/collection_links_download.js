@@ -119,7 +119,19 @@ function addArray() {
  * @returns the "sanitized" string
  */
 function sanitizeName(name) {
-    return name.replaceAll("<", "‹").replaceAll(">", "›").replaceAll(":", "∶").replaceAll("\"", "″").replaceAll("/", "∕").replaceAll("\\", "∖").replaceAll("|", "¦").replaceAll("?", "¿").replaceAll("*", "");
+    return name
+        .replaceAll("<", "")
+        .replaceAll(">", "")
+        .replaceAll(":", "")
+        .replaceAll("\"", "_")
+        .replaceAll("/", "_")
+        .replaceAll("\\", "_")
+        .replaceAll("|", "_")
+        .replaceAll("?", "")
+        .replaceAll("*", "")
+        .replace(/[^a-zA-Z0-9\.]/g, '_')     // Replace any non-alphanumeric chars (except dots) with underscore
+        .replace(/_+/g, '_')                 // Replace multiple consecutive underscores with a single one
+        .replace(/^_|_$/g, '');              // Remove leading and trailing underscores
 }
 /**
  * Delete the keys that the user doesn't want in the output JSON

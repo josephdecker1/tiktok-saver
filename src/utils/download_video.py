@@ -48,5 +48,5 @@ def download_video(url, output_path="outputs"):
         print(f"An error occurred: {str(e)}")
 
 if __name__ == "__main__":
-    video_url = "https://www.tiktok.com/@not.that.ellen/video/7453936225116851498"
+    video_url = "https://www.tiktok.com/@kindafunkyright/video/7320345381299080481"
     download_video(video_url)

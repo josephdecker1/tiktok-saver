@@ -3,17 +3,37 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
+
+import utils
+
+from pathlib import Path
+import platform
 import argparse
 import random
 import time
 import re
 import os
 
-def setup_chrome(download_dir):
+def setup_chrome(download_dir=str(utils.get_downloads_dir("TikTok")), profile_name="Default"):
     """Configure Chrome to use existing profile"""
+
+    chrome_data_path = str(utils.get_chrome_data_path())
     chrome_options = Options()
-    chrome_options.add_argument('--user-data-dir=C:\\Users\\joseph\\AppData\\Local\\Google\\Chrome\\User Data')
-    chrome_options.add_argument('--profile-directory=Default')
+    if platform.system() == "Windows":
+        chrome_options.add_argument(f'--user-data-dir={chrome_data_path}')
+        chrome_options.add_argument(f'--profile-directory={profile_name}')
+        # chrome_options.add_argument("--start-maximized")
+    elif platform.system() == "Linux":
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
+        # chrome_options.add_argument("--start-maximized")
+        chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+        chrome_options.add_argument("--disable-plugins-discovery")
+    elif platform.system() == "Darwin":
+        chrome_options.add_argument(f'--user-data-dir={chrome_data_path}')
+        chrome_options.add_argument(f'--profile-directory={profile_name}')
+        # chrome_options.add_argument("--start-maximized")
+
     # Set download directory
     prefs = {
         "download.default_directory": download_dir,
@@ -84,16 +104,26 @@ def scroll_to_bottom(driver):
             # Wait for content to load
             time.sleep(1)
 
-def wait_for_download(collection_url, download_dir, timeout=60):
+def wait_for_download(collection_url, username, timeout=30):
     """Wait for the collection's txt file to appear in downloads"""
     # Extract collection name from URL
-    collection_name = collection_url.split('/')[-1].split('-')[0]
+    collection_name = collection_url.replace(f"https://www.tiktok.com/@{username}/collection/", "").split('-')[0]
+    print(f"{collection_name =}")
     collection_name = collection_name.replace('%20', ' ')  # Replace URL encoding for spaces
-    
+    print(f"{collection_name =}")
+
+    # Sanitize the name:
+    # 1. First replace URL encoding for spaces
+    # 2. Replace all non-alphanumeric chars (except dots) with underscores
+    # 3. Remove multiple consecutive underscores
+    # 4. Remove leading/trailing underscores
+    collection_name = re.sub(r'[^a-zA-Z0-9\.]', '_', collection_name).replace('_+', '_').strip('_')
+    print(f"Sanitized collection name = {collection_name}")
+
     seconds = 0
     while seconds < timeout:
         # Check for txt files that start with the collection name
-        for filename in os.listdir(download_dir):
+        for filename in os.listdir(utils.get_downloads_dir("TikTok")):
             if filename.startswith(collection_name) and filename.endswith('.txt'):
                 return True
         time.sleep(1)
@@ -101,21 +131,20 @@ def wait_for_download(collection_url, download_dir, timeout=60):
     
     return False
 
-def download_collection(driver, collection_url):
+def download_collection(driver, collection_url, username):
     print(f"downloading {collection_url}...")
     driver.get(collection_url)
     time.sleep(5)
     
     # Read and execute the script
-    with open("video_download.js", "r") as f:
+    with open(Path(__file__).resolve().parent / "collection_links_download.js", "r") as f:
         dl_script = f.read()
     
     driver.execute_script(dl_script)
     
     # Wait for specific txt file
-    downloads_dir = os.path.join(os.path.expanduser('~'), 'Downloads')
-    downloads_dir = "C:\\Users\\joseph\\Desktop\\code\\tt\\collection_files"
-    if wait_for_download(collection_url, downloads_dir):
+    downloads_dir = utils.get_downloads_dir("TikTok")
+    if wait_for_download(collection_url, username):
         print("Download completed!")
     else:
         print("Download timed out!")
@@ -125,9 +154,14 @@ def main():
     parser.add_argument('username', help='TikTok username (without @)')
     args = parser.parse_args()
 
+    # Check if our TikTok download directory exists in Downloads
+    download_path = utils.get_downloads_dir('TikTok')
+    if not download_path.exists():
+        download_path.mkdir()
+
     # os.system("taskkill /f /im chrome.exe")  # Close any existing Chrome windows
     
-    driver = webdriver.Chrome(options=setup_chrome("C:\\Users\\joseph\\Desktop\\code\\tt\\collection_files"))
+    driver = webdriver.Chrome(options=setup_chrome())
     driver.get("https://tiktok.com")
     
     if wait_for_login(driver, "#app-header > div > div.css-q8q040-DivHeaderRightContainer.e8m7uf60 > div.css-1deszxq-DivHeaderInboxContainer.e1xroc440 > sup"):
@@ -136,7 +170,9 @@ def main():
 
         driver.get(f"https://tiktok.com/@{args.username}")
         time.sleep(5)
-        driver.find_element(By.CSS_SELECTOR, "#main-content-others_homepage > div > div.css-833rgq-DivShareLayoutMain.ee7zj8d4 > div.css-1pbyc88-FeedTabWrapper.e1jjp0pq7 > div.css-1dw5iuh-DivVideoFeedTab.e1jjp0pq0 > p.css-1wncxfu-PFavorite.e1jjp0pq3").click()
+        # driver.find_element(By.CSS_SELECTOR, "#main-content-others_homepage > div > div.css-833rgq-DivShareLayoutMain.ee7zj8d4 > div.css-1pbyc88-FeedTabWrapper.e1jjp0pq7 > div.css-1dw5iuh-DivVideoFeedTab.e1jjp0pq0 > p.css-1wncxfu-PFavorite.e1jjp0pq3").click()
+        driver.find_element(By.XPATH, "/html/body/div[1]/div[2]/div[2]/div/div/div[2]/div[1]/div[1]/p[3]").click()
+        print()
         time.sleep(3)
         driver.execute_script("""
     const el = document.querySelector("#collections");
@@ -148,9 +184,15 @@ def main():
         scroll_to_bottom(driver)
         time.sleep(10)
         collections = get_collection_links(driver)
-        for collection in collections:
-            download_collection(driver, collection)
+        for i, collection in enumerate(collections):
+            print(f"Downloading Collection [{i+1}/{len(collections)}] - {collection}")
+            download_collection(driver, collection, args.username)
         print("Downloads complete!!")
+        # rename any files that have a whitespace in the name
+        # Only rename specific file types (e.g., .txt files)
+        for path in download_path.rglob('*.txt'):
+            if ' ' in path.name:
+                path.rename(path.with_name(path.name.replace(' ', '_')))
         time.sleep(6)
     else:
         print("Login failed or timed out")
@@ -159,6 +201,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+    # print(utils.get_downloads_dir("TikTok"))
 
 # document.querySelector('#collections').click()
 # https://www.tiktok.com/@_jdeck_/collection/byu-7418411649947781931
