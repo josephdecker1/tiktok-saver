@@ -6,11 +6,12 @@ from selenium.webdriver.common.by import By
 
 import utils
 
-import platform
 from pathlib import Path
+import platform
 import argparse
 import random
 import time
+import re
 import os
 
 def setup_chrome(download_dir=str(utils.get_downloads_dir("TikTok")), profile_name="Default"):
@@ -21,13 +22,17 @@ def setup_chrome(download_dir=str(utils.get_downloads_dir("TikTok")), profile_na
     if platform.system() == "Windows":
         chrome_options.add_argument(f'--user-data-dir={chrome_data_path}')
         chrome_options.add_argument(f'--profile-directory={profile_name}')
-        chrome_options.add_argument("--start-maximized")
+        # chrome_options.add_argument("--start-maximized")
     elif platform.system() == "Linux":
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.add_argument("--start-maximized")
+        # chrome_options.add_argument("--start-maximized")
         chrome_options.add_argument('--disable-blink-features=AutomationControlled')
         chrome_options.add_argument("--disable-plugins-discovery")
+    elif platform.system() == "Darwin":
+        chrome_options.add_argument(f'--user-data-dir={chrome_data_path}')
+        chrome_options.add_argument(f'--profile-directory={profile_name}')
+        # chrome_options.add_argument("--start-maximized")
 
     # Set download directory
     prefs = {
@@ -99,12 +104,22 @@ def scroll_to_bottom(driver):
             # Wait for content to load
             time.sleep(1)
 
-def wait_for_download(collection_url, timeout=60):
+def wait_for_download(collection_url, username, timeout=30):
     """Wait for the collection's txt file to appear in downloads"""
     # Extract collection name from URL
-    collection_name = collection_url.split('/')[-1].split('-')[0]
+    collection_name = collection_url.replace(f"https://www.tiktok.com/@{username}/collection/", "").split('-')[0]
+    print(f"{collection_name =}")
     collection_name = collection_name.replace('%20', ' ')  # Replace URL encoding for spaces
-    
+    print(f"{collection_name =}")
+
+    # Sanitize the name:
+    # 1. First replace URL encoding for spaces
+    # 2. Replace all non-alphanumeric chars (except dots) with underscores
+    # 3. Remove multiple consecutive underscores
+    # 4. Remove leading/trailing underscores
+    collection_name = re.sub(r'[^a-zA-Z0-9\.]', '_', collection_name).replace('_+', '_').strip('_')
+    print(f"Sanitized collection name = {collection_name}")
+
     seconds = 0
     while seconds < timeout:
         # Check for txt files that start with the collection name
@@ -116,7 +131,7 @@ def wait_for_download(collection_url, timeout=60):
     
     return False
 
-def download_collection(driver, collection_url):
+def download_collection(driver, collection_url, username):
     print(f"downloading {collection_url}...")
     driver.get(collection_url)
     time.sleep(5)
@@ -129,7 +144,7 @@ def download_collection(driver, collection_url):
     
     # Wait for specific txt file
     downloads_dir = utils.get_downloads_dir("TikTok")
-    if wait_for_download(collection_url):
+    if wait_for_download(collection_url, username):
         print("Download completed!")
     else:
         print("Download timed out!")
@@ -169,8 +184,9 @@ def main():
         scroll_to_bottom(driver)
         time.sleep(10)
         collections = get_collection_links(driver)
-        for collection in collections:
-            download_collection(driver, collection)
+        for i, collection in enumerate(collections):
+            print(f"Downloading Collection [{i+1}/{len(collections)}] - {collection}")
+            download_collection(driver, collection, args.username)
         print("Downloads complete!!")
         # rename any files that have a whitespace in the name
         # Only rename specific file types (e.g., .txt files)
