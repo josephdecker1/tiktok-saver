@@ -11,3 +11,12 @@ wheels/
 collection_files/
 outputs/
 *.db
+
+# Tool runtime artifacts — never commit session cookies or downloaded media
+cookies_*.txt
+videos/
+*.info.json
+.DS_Store
+
+# Local agent/session dir
+.claude/

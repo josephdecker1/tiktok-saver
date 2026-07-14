@@ -1,60 +1,85 @@
 # TikTok Saver
 
-This repository provides a tool to save TikTok videos locally.
+Durable, first-party export of **your own** TikTok **Collections** (named folders),
+**Favorites** (saved/bookmarks) and **Likes** — the list *and* the videos.
 
-## Features
+Runs locally against your own logged-in browser session. It reads the TikTok web app's
+own JSON responses (immune to the CSS churn that breaks DOM scrapers) to build a normalized
+SQLite manifest, then hands explicit per-post URLs to **yt-dlp** (videos) and **gallery-dl**
+(photo slideshows). See [ARCHITECTURE.md](ARCHITECTURE.md) for the design and the verified
+endpoint map.
 
--   Downloads a list of videos for each of your collections
--   Saves videos to your system's `Downloads` folder, under `TikTok/<COLLECTION_NAME>`
+> **v0.2 rewrite.** The original Selenium + hashed-CSS/XPath scraper rotted because those
+> selectors change on every TikTok deploy. This version uses Playwright **response
+> interception** instead. The old `src/` is gone; the *idea* (browser session → URL list →
+> yt-dlp → sqlite) survives, the brittle code does not.
 
-## Installation
+## Install
 
-To install the required dependencies, follow these steps:
+```sh
+uv sync
+uv run playwright install chromium   # only needed if you don't have Google Chrome installed
+```
 
-1. Clone the repository:
-
-    ```sh
-    git clone git@github.com:josephdecker1/tiktok-saver.git
-    cd tiktok-saver
-    ```
-
-2. Install `uv` for Python:
-
-    ```sh
-    pip install uv
-    ```
-
-3. Run uv sync
-    ```sh
-    uv sync
-    ```
+The tool prefers your **real installed Chrome** (`channel="chrome"`) for a weaker anti-bot
+fingerprint; it falls back to Playwright's bundled Chromium if Chrome is absent.
 
 ## Usage
 
-To use the TikTok Saver, run the following command from the base of the repository:
-
 ```sh
-uv run src/browser.py <TIKTOK_USERNAME>
+# 1. One-time login — opens Chrome with a dedicated tool profile. Log into TikTok, press Enter.
+uv run tiktok-saver login
+
+# 2. Read all your lists into the manifest (no downloads yet). Use YOUR username, no @.
+uv run tiktok-saver enumerate _jdeck_ --surface all
+
+# 3. Download the bytes for everything pending.
+uv run tiktok-saver download _jdeck_ --surface all
+
+# …or do enumerate + download in one pass:
+uv run tiktok-saver run _jdeck_ --surface all
+
+# See what's in the manifest and what state each post is in:
+uv run tiktok-saver status _jdeck_
 ```
 
-Replace `<TIKTOK_USERNAME>` your username, minus any `@` at the beginning.
+`--surface` accepts `all` (default), `collections`, `favorites`, or `liked`.
+`--photos-only` / `--videos-only` restrict the download step. `--headless` runs Chrome
+without a window (higher anti-bot risk — leave it off for the first runs).
 
-This script automates a browser to navigate to TikTok and waits for you to log in. Once you've logged in, the script will navigate to your profile and your favorites/collections, grabs all of the collection links, then navigates the browser to each collection to gather a list of video urls and then download a file with the name of your collection to your system's Downloads folder, contained in the `TikTok` folder, minus any special characters.
+Output (default `~/Downloads/TikTok/`):
 
-Once that has completed, you'll run the following command, which will actually download each video into it's respective collection and creates a Sqlite3 db named `tt_metadata_<TIKTOK_USERNAME>.db` in the `Downloads/TikTok/` folder:
+- `tt_manifest_<username>.db` — the SQLite manifest (posts, memberships, media, status)
+- `videos/` — downloaded videos (`<id>.mp4`) + `.info.json` sidecars
+- `videos/photos/<id>/` — slideshow images
+- `cookies_<username>.txt` — session cookies for the download step (gitignored; keep private)
+
+### Optional: cross-check against TikTok's official export
+
+TikTok's in-app **Settings → Account → Download your data** (JSON) contains your Favorites
+and Likes but **not** your Collections. If you request it, you can reconcile it against the
+live-scraped manifest to catch anything the scroll missed:
 
 ```sh
-uv run src/tt_dl_db.py <TIKTOK_USERNAME>
+uv run tiktok-saver reconcile _jdeck_ path/to/user_data.json
 ```
 
-Any videos that fail to download will be saved to `Downloads/TikTok/failed_downloads.csv`. There are many videos that are unable to be viewed unless a user is logged in - you'll need to download those videos manually, or automate the browser to let you log in and then navigate to those videos. This is a possible future feature.
+## What it will and won't get
 
-If desired there is a script under the `src/utils` directory called `download_video.py`. Take a look - you can utilize this script to try and re-download any videos that may be available publicly but the main script wasn't able to download.
+- **Gets:** every video/photo in your Collections, Favorites and Likes that is still live
+  and viewable by your logged-in account, with full metadata preserved even after link rot.
+- **Can't get (recorded as terminal states, never retried):** deleted posts, private
+  accounts that block you, region/age-locked videos. Their metadata is still captured from
+  first sighting.
 
-## Contributing
+## Status
 
-Contributions are welcome! Please open an issue or submit a pull request.
+The pure-logic core (manifest, surface mapping, JSON parsing, error classification,
+reconcile) is unit-tested (`uv run pytest`). The live browser flow needs your one-time
+login to exercise end-to-end; the tab-opening selectors are the most likely thing to need
+a small tweak after the first run against your account (see ARCHITECTURE.md → Empirical
+unknowns).
 
 ## License
 
-This project is licensed under the MIT License.
+MIT.
