@@ -103,4 +103,7 @@ def export_cookies_txt(context, out_path: str | Path) -> Path:
             "\t".join([domain, include_sub, path, secure, str(expires), name, value])
         )
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # Holds a live sessionid — keep it owner-only, not world-readable.
+    with contextlib.suppress(OSError):
+        out_path.chmod(0o600)
     return out_path

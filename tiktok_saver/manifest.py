@@ -67,14 +67,12 @@ CREATE TABLE IF NOT EXISTS media_files (
 );
 
 CREATE TABLE IF NOT EXISTS download_status (
-    video_id       TEXT,
-    source_type    TEXT,
-    state          TEXT,                      -- pending|done|gone|private|regionlocked|error
-    http_status    INTEGER,
+    video_id       TEXT PRIMARY KEY,          -- download is a property of the POST, not
+    state          TEXT,                      -- of any one list it appears in
+    http_status    INTEGER,                   -- pending|done|gone|private|regionlocked|error
     error          TEXT,
     attempts       INTEGER DEFAULT 0,
-    last_attempt_ts INTEGER,
-    PRIMARY KEY (video_id, source_type)
+    last_attempt_ts INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_membership_video   ON memberships(video_id);
@@ -208,39 +206,38 @@ class Manifest:
             (video_id, source_type, source_id, source_name, position, _now()),
         )
 
-    def ensure_status(self, video_id: str, source_type: str) -> None:
+    def ensure_status(self, video_id: str) -> None:
         """Create a pending download_status row if none exists (never resets a
         terminal state on re-enumeration)."""
         self.conn.execute(
             """
-            INSERT INTO download_status (video_id, source_type, state, last_attempt_ts)
-            VALUES (?, ?, 'pending', NULL)
-            ON CONFLICT(video_id, source_type) DO NOTHING
+            INSERT INTO download_status (video_id, state, last_attempt_ts)
+            VALUES (?, 'pending', NULL)
+            ON CONFLICT(video_id) DO NOTHING
             """,
-            (video_id, source_type),
+            (video_id,),
         )
 
     def set_status(
         self,
         video_id: str,
-        source_type: str,
         state: str,
         http_status: int | None = None,
         error: str | None = None,
     ) -> None:
         self.conn.execute(
             """
-            INSERT INTO download_status (video_id, source_type, state, http_status,
+            INSERT INTO download_status (video_id, state, http_status,
                 error, attempts, last_attempt_ts)
-            VALUES (?, ?, ?, ?, ?, 1, ?)
-            ON CONFLICT(video_id, source_type) DO UPDATE SET
+            VALUES (?, ?, ?, ?, 1, ?)
+            ON CONFLICT(video_id) DO UPDATE SET
                 state=excluded.state,
                 http_status=excluded.http_status,
                 error=excluded.error,
                 attempts=download_status.attempts + 1,
                 last_attempt_ts=excluded.last_attempt_ts
             """,
-            (video_id, source_type, state, http_status, error, _now()),
+            (video_id, state, http_status, error, _now()),
         )
 
     def add_media_file(
@@ -264,23 +261,6 @@ class Manifest:
             (video_id, kind, num, local_path, sha256, filesize, _now()),
         )
 
-    def mark_gone(self, seen_before_ts: int, source_type: str) -> int:
-        """Transition posts NOT seen in the latest enumeration of a surface to
-        'gone' (don't delete — the metadata still has archival value)."""
-        cur = self.conn.execute(
-            """
-            UPDATE download_status SET state='gone'
-            WHERE source_type=? AND state NOT IN ('done','gone','private','regionlocked')
-              AND video_id IN (
-                SELECT m.video_id FROM memberships m
-                JOIN posts p ON p.video_id=m.video_id
-                WHERE m.source_type=? AND p.last_seen_ts < ?
-              )
-            """,
-            (source_type, source_type, seen_before_ts),
-        )
-        return cur.rowcount
-
     def commit(self) -> None:
         self.conn.commit()
 
@@ -288,10 +268,12 @@ class Manifest:
 
     def pending_downloads(self, source_type: str | None = None) -> list[sqlite3.Row]:
         """Posts needing a download: no media file yet AND not in a terminal
-        state. Joins in post_type + canonical_url so the caller can route."""
+        state. ONE row per post (download is per-post, not per-list), so a video
+        saved AND liked is fetched once, never 2-3x. ``source_type`` restricts
+        to posts that are MEMBERS of that surface, without multiplying rows."""
         q = """
-            SELECT DISTINCT p.video_id, p.post_type, p.canonical_url,
-                   p.author_unique_id, d.source_type, d.state
+            SELECT p.video_id, p.post_type, p.canonical_url,
+                   p.author_unique_id, d.state
             FROM download_status d
             JOIN posts p ON p.video_id = d.video_id
             WHERE d.state NOT IN ('done','gone','private','regionlocked')
@@ -299,7 +281,8 @@ class Manifest:
         """
         args: tuple = ()
         if source_type:
-            q += " AND d.source_type = ?"
+            q += (" AND EXISTS (SELECT 1 FROM memberships m "
+                  "WHERE m.video_id = p.video_id AND m.source_type = ?)")
             args = (source_type,)
         return list(self.conn.execute(q, args))
 

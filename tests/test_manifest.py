@@ -91,10 +91,10 @@ def test_reenumeration_keeps_first_seen_updates_last_seen(tmp_path):
 def test_ensure_status_never_resets_terminal(tmp_path):
     m = Manifest(tmp_path / "t.db")
     m.upsert_post(_video_item("111"))
-    m.ensure_status("111", "liked")
-    m.set_status("111", "liked", "done")
+    m.ensure_status("111")
+    m.set_status("111", "done")
     # A later re-enumeration calls ensure_status again — must stay 'done'.
-    m.ensure_status("111", "liked")
+    m.ensure_status("111")
     state = list(m.conn.execute("SELECT state FROM download_status WHERE video_id='111'"))[0][0]
     assert state == "done"
 
@@ -103,25 +103,36 @@ def test_pending_excludes_terminal_and_downloaded(tmp_path):
     m = Manifest(tmp_path / "t.db")
     for v in ("a", "b", "c", "d"):
         m.upsert_post(_video_item(v))
-        m.ensure_status(v, "liked")
-    m.set_status("a", "liked", "done")       # terminal
-    m.set_status("b", "liked", "gone")       # terminal
+        m.ensure_status(v)
+    m.set_status("a", "done")       # terminal
+    m.set_status("b", "gone")       # terminal
     m.add_media_file("c", "video", 0, "/x/c.mp4", 10)  # has a file
     m.commit()
     pending = {r["video_id"] for r in m.pending_downloads()}
     assert pending == {"d"}
 
 
-def test_mark_gone_transitions_unseen(tmp_path):
+def test_multi_surface_video_pending_once(tmp_path):
+    # A video saved AND liked must appear ONCE in the pending snapshot, not
+    # twice — the HIGH bug Saruman caught (2-3x re-download + path clobber).
     m = Manifest(tmp_path / "t.db")
-    m.upsert_post(_video_item("old"))
-    m.add_membership("old", "liked", "_self", "liked", 0)
-    m.ensure_status("old", "liked")
+    m.upsert_post(_video_item("dup"))
+    m.add_membership("dup", "favorites", "_self", "favorites", 0)
+    m.add_membership("dup", "liked", "_self", "liked", 0)
+    m.ensure_status("dup")
     m.commit()
-    # Simulate: a much later enumeration where 'old' was NOT seen.
-    import time
-    cutoff = int(time.time()) + 100
-    n = m.mark_gone(cutoff, "liked")
-    assert n == 1
-    state = list(m.conn.execute("SELECT state FROM download_status WHERE video_id='old'"))[0][0]
-    assert state == "gone"
+    rows = m.pending_downloads()
+    assert [r["video_id"] for r in rows] == ["dup"]     # exactly one row
+
+
+def test_pending_source_filter_by_membership(tmp_path):
+    m = Manifest(tmp_path / "t.db")
+    m.upsert_post(_video_item("liked_only"))
+    m.add_membership("liked_only", "liked", "_self", "liked", 0)
+    m.ensure_status("liked_only")
+    m.upsert_post(_video_item("fav_only"))
+    m.add_membership("fav_only", "favorites", "_self", "favorites", 0)
+    m.ensure_status("fav_only")
+    m.commit()
+    liked = {r["video_id"] for r in m.pending_downloads("liked")}
+    assert liked == {"liked_only"}

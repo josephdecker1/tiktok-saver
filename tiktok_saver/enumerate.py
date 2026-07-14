@@ -223,7 +223,7 @@ def _persist(
         except ValueError:
             continue
         manifest.add_membership(real_id, source_type, source_id, source_name, pos)
-        manifest.ensure_status(real_id, source_type)
+        manifest.ensure_status(real_id)
 
 
 def _open_owner_tab_generic(page, candidates, log) -> bool:

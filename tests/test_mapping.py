@@ -1,6 +1,10 @@
-"""Guard the one piece of dangerous TikTok trivia: the endpoint-name inversion.
+"""Swap-guard for the endpoint-name inversion.
 
-If any of these fail, the tool is about to export the WRONG list.
+These are change-detectors, not live-correctness proofs: they lock in the
+favorites->collect / liked->favorite pairing so an unrelated edit can't quietly
+swap the two strings and make the tool export the wrong list. Whether these
+endpoints are still what live TikTok serves is a disclosed empirical unknown
+(ARCHITECTURE.md), confirmed only by the first live run.
 """
 from tiktok_saver import mapping
 

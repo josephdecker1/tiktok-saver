@@ -73,10 +73,15 @@ row + three `memberships` rows (the old flat single-FK schema couldn't represent
 
 ## Idempotent re-run
 
-1. Re-enumerate (cheap, cookied) → UPSERT `last_seen_ts`, add new memberships, transition
-   vanished posts to `gone` (never delete).
-2. Download only where **no `media_files` row exists AND state ∉ terminal**.
-3. Terminal states short-circuit — nothing re-downloads.
+1. Re-enumerate (cheap, cookied) → UPSERT `last_seen_ts` + refresh `raw_json`, add any new
+   memberships. A post that vanishes from a list keeps its `posts` row, its membership rows
+   and its metadata (link-rot insurance) — nothing is deleted. `last_seen_ts` records when
+   it was last present.
+2. Download only where **no `media_files` row exists AND state ∉ terminal**. `download_status`
+   is keyed per **post** (not per list), so a video in three lists is fetched once.
+3. `gone` / `private` / `regionlocked` are decided at **download time** from the fetch result
+   (a post leaving a list is not the same as the post being deleted), and once terminal they
+   short-circuit — nothing re-downloads.
 
 ## Download details
 

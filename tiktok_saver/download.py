@@ -88,9 +88,8 @@ def download_all(
         vid = row["video_id"]
         ptype = row["post_type"] or "video"
         url = row["canonical_url"]
-        stype = row["source_type"]
         if url is None:
-            manifest.set_status(vid, stype, "error", error="no canonical url")
+            manifest.set_status(vid, "error", error="no canonical url")
             tally["error"] = tally.get("error", 0) + 1
             continue
         if ptype == "image" and videos_only:
@@ -101,17 +100,17 @@ def download_all(
         if ptype == "image":
             if not avail["gallery-dl"]:
                 log(f"  SKIP image {vid}: gallery-dl not installed")
-                manifest.set_status(vid, stype, "error", error="gallery-dl missing")
+                manifest.set_status(vid, "error", error="gallery-dl missing")
                 continue
             state = _download_photo(vid, url, out_dir, cookies_txt, manifest, log)
         else:
             if not avail["yt-dlp"]:
                 log(f"  SKIP video {vid}: yt-dlp not installed")
-                manifest.set_status(vid, stype, "error", error="yt-dlp missing")
+                manifest.set_status(vid, "error", error="yt-dlp missing")
                 continue
             state = _download_video(vid, url, out_dir, cookies_txt, manifest, log)
 
-        manifest.set_status(vid, stype, state)
+        manifest.set_status(vid, state)
         manifest.commit()
         tally[state] = tally.get(state, 0) + 1
 
