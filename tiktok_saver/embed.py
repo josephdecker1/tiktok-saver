@@ -82,6 +82,10 @@ class Embedder:
         return self._norm(feats)[0]
 
     def _norm(self, feats):
+        # Newer transformers returns BaseModelOutputWithPooling from
+        # get_image_features/get_text_features; the embedding is pooler_output.
+        # Older versions return the tensor directly — handle both.
+        feats = getattr(feats, "pooler_output", feats)
         arr = feats.float().cpu().numpy()
         norms = self.np.linalg.norm(arr, axis=-1, keepdims=True)
         norms[norms == 0] = 1.0
