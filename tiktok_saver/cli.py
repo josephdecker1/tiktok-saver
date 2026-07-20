@@ -73,10 +73,11 @@ def _cmd_download(args) -> int:
     if not cookies.exists():
         print(f"✗ no cookies file at {cookies}. Run `enumerate` first.", file=sys.stderr)
         return 1
-    stype = None if args.surface == "all" else mapping.SURFACES[args.surface].key
+    stypes = mapping.keys_for(args.surface)      # None for 'all'
     tally = dl.download_all(
         manifest, out_dir, cookies,
-        source_type=stype, photos_only=args.photos_only, videos_only=args.videos_only,
+        source_types=stypes, photos_only=args.photos_only, videos_only=args.videos_only,
+        limit=args.limit,
     )
     print("download tally:", ", ".join(f"{k}={v}" for k, v in sorted(tally.items())) or "nothing to do")
     manifest.close()
@@ -155,13 +156,17 @@ def build_parser() -> argparse.ArgumentParser:
     for name, func in (("enumerate", _cmd_enumerate), ("download", _cmd_download), ("run", _cmd_run)):
         sp = sub.add_parser(name, help=func.__doc__)
         add_common(sp)
-        sp.add_argument("--surface", default="all",
+        sp.add_argument("--surface", nargs="+", default=["all"],
                         choices=["all", *mapping.ITEM_SURFACE_KEYS],
-                        help="which list(s) to process (default: all)")
+                        metavar="SURFACE",
+                        help="one or more of: all, collections, favorites, liked "
+                             "(default: all). e.g. --surface collections favorites")
         sp.add_argument("--headless", action="store_true",
                         help="run Chrome headless (higher anti-bot risk; default off)")
         sp.add_argument("--photos-only", action="store_true", help="download only photo slideshows")
         sp.add_argument("--videos-only", action="store_true", help="download only videos")
+        sp.add_argument("--limit", type=int, default=None,
+                        help="cap how many posts to download this run (for test batches)")
         sp.set_defaults(func=func)
 
     sp = sub.add_parser("reconcile", help="diff official data export vs manifest")

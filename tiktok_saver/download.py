@@ -69,15 +69,17 @@ def download_all(
     manifest: Manifest,
     out_dir: str | Path,
     cookies_txt: str | Path,
-    source_type: str | None = None,
+    source_types: "str | list[str] | None" = None,
     photos_only: bool = False,
     videos_only: bool = False,
+    limit: int | None = None,
     log: Callable[[str], None] = print,
 ) -> dict[str, int]:
     """Download every pending post. Returns a state->count tally of this run.
 
     ``out_dir`` is the base; videos land in ``out_dir/videos`` and photo
-    slideshows in the SIBLING ``out_dir/photos`` (not nested under videos)."""
+    slideshows in the SIBLING ``out_dir/photos`` (not nested under videos).
+    ``limit`` caps how many pending posts to fetch this run (for test batches)."""
     out_dir = Path(out_dir)
     video_dir = out_dir / "videos"
     photo_dir = out_dir / "photos"
@@ -86,8 +88,16 @@ def download_all(
     cookies_txt = str(cookies_txt)
 
     avail = tools_available()
-    pending = manifest.pending_downloads(source_type)
-    log(f"{len(pending)} post(s) pending download")
+    pending = manifest.pending_downloads(source_types)
+    # Apply the photo/video filter BEFORE limit, so `--photos-only --limit 2`
+    # yields 2 actual photos rather than slicing 2 posts that then get skipped.
+    if videos_only:
+        pending = [r for r in pending if (r["post_type"] or "video") == "video"]
+    if photos_only:
+        pending = [r for r in pending if r["post_type"] == "image"]
+    if limit is not None:
+        pending = pending[:limit]
+    log(f"{len(pending)} post(s) to download this run")
 
     tally: dict[str, int] = {}
     for row in pending:
@@ -97,10 +107,6 @@ def download_all(
         if url is None:
             manifest.set_status(vid, "error", error="no canonical url")
             tally["error"] = tally.get("error", 0) + 1
-            continue
-        if ptype == "image" and videos_only:
-            continue
-        if ptype == "video" and photos_only:
             continue
 
         if ptype == "image":

@@ -136,3 +136,14 @@ def test_pending_source_filter_by_membership(tmp_path):
     m.commit()
     liked = {r["video_id"] for r in m.pending_downloads("liked")}
     assert liked == {"liked_only"}
+
+
+def test_pending_source_filter_accepts_list(tmp_path):
+    m = Manifest(tmp_path / "t.db")
+    for v, st in (("c", "collection"), ("f", "favorites"), ("l", "liked")):
+        m.upsert_post(_video_item(v))
+        m.add_membership(v, st, "_self", st, 0)
+        m.ensure_status(v)
+    m.commit()
+    got = {r["video_id"] for r in m.pending_downloads(["collection", "favorites"])}
+    assert got == {"c", "f"}      # no liked

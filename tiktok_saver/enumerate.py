@@ -95,36 +95,30 @@ def _autoscroll_until_done(page, cap: Capture, log: Callable[[str], None]) -> No
     log(f"    hit MAX_SCROLLS={MAX_SCROLLS} — surface may be incomplete")
 
 
-def _open_owner_tab(page, surface: mapping.Surface, log: Callable[[str], None]) -> bool:
-    """Click the owner-only Favorites/Liked tab via the STABLE data-e2e test id
-    (never hashed CSS or XPath). Returns True if the tab opened."""
-    # data-e2e values confirmed live in maintained scrapers (stepney141/favs,
-    # LikeVault): favorites tab -> favorites-item cards; liked -> user-liked-item.
-    tab_testids = {
-        "favorites": ["favorites-tab", "favorites"],
-        "liked": ["liked-tab", "like-tab", "user-liked"],
-    }
-    page.set_test_id_attribute("data-e2e")
-    for tid in tab_testids.get(surface.key, []):
-        try:
-            el = page.get_by_test_id(tid)
-            if el.count() > 0:
-                el.first.click(timeout=4000)
-                log(f"    opened tab via data-e2e={tid}")
-                time.sleep(SCROLL_PAUSE_S)
-                return True
-        except Exception:
-            continue
-    # Fallback: role-based text match on the tab label.
-    for label in ("Favorites", "Liked", "Likes"):
-        try:
-            page.get_by_text(label, exact=True).first.click(timeout=3000)
-            log(f"    opened tab via text={label}")
-            time.sleep(SCROLL_PAUSE_S)
-            return True
-        except Exception:
-            continue
-    return False
+def _click_tab(page, tab_name: str, log: Callable[[str], None]) -> bool:
+    """Open a profile tab (Favorites / Liked) by its ACCESSIBLE ROLE.
+
+    Verified live 2026-07-19: ``get_by_role("tab", name="Favorites"|"Liked")``
+    clicks the right tab. This deliberately avoids ``get_by_test_id`` — Playwright's
+    test-id defaults to ``data-testid`` (TikTok uses ``data-e2e``), which is what
+    made the earlier build crash — and avoids hashed CSS/XPath entirely. Falls
+    back to a visible-text click.
+    """
+    try:
+        page.get_by_role("tab", name=tab_name).first.click(timeout=6000)
+        log(f"    opened '{tab_name}' tab")
+        time.sleep(SCROLL_PAUSE_S)
+        return True
+    except Exception:
+        pass
+    try:
+        page.get_by_text(tab_name, exact=True).first.click(timeout=4000)
+        log(f"    opened '{tab_name}' tab (text fallback)")
+        time.sleep(SCROLL_PAUSE_S)
+        return True
+    except Exception as e:
+        log(f"    could not open '{tab_name}' tab: {e}")
+        return False
 
 
 def enumerate_collections(
@@ -146,8 +140,11 @@ def enumerate_collections(
     log(f"  collections: loading @{username} profile")
     page.goto(f"https://www.tiktok.com/@{username}", wait_until="domcontentloaded")
     time.sleep(2)
-    # The collections tab is public; open it and let the folder-list XHR fire.
-    _open_owner_tab_generic(page, ["Collections", "collections-tab"], log)
+    # The folder list (/api/user/collection_list/) fires when the FAVORITES tab
+    # opens — there is no separate Collections tab (verified live 2026-07-19).
+    if not _click_tab(page, mapping.COLLECTIONS_FOLDERS.tab_name, log):
+        log("  WARNING: could not open Favorites tab — is this YOUR account, "
+            "logged in? (collections live under Favorites)")
     _autoscroll_until_done(page, folder_cap, log)
 
     result: dict[str, int] = {}
@@ -198,8 +195,8 @@ def enumerate_item_surface(
     log(f"  {surface.ui_name}: loading @{username} profile")
     page.goto(f"https://www.tiktok.com/@{username}", wait_until="domcontentloaded")
     time.sleep(2)
-    if surface.owner_only and not _open_owner_tab(page, surface, log):
-        log(f"  WARNING: could not open the {surface.ui_name} tab — is this YOUR "
+    if surface.owner_only and not _click_tab(page, surface.tab_name, log):
+        log(f"  WARNING: could not open the '{surface.tab_name}' tab — is this YOUR "
             f"account and are you logged in? (owner-only tab)")
     _autoscroll_until_done(page, cap, log)
     _persist(manifest, cap, source_type=surface.key, source_id="_self",
@@ -224,26 +221,6 @@ def _persist(
             continue
         manifest.add_membership(real_id, source_type, source_id, source_name, pos)
         manifest.ensure_status(real_id)
-
-
-def _open_owner_tab_generic(page, candidates, log) -> bool:
-    page.set_test_id_attribute("data-e2e")
-    for c in candidates:
-        try:
-            el = page.get_by_test_id(c)
-            if el.count() > 0:
-                el.first.click(timeout=4000)
-                time.sleep(SCROLL_PAUSE_S)
-                return True
-        except Exception:
-            pass
-        try:
-            page.get_by_text(c, exact=True).first.click(timeout=3000)
-            time.sleep(SCROLL_PAUSE_S)
-            return True
-        except Exception:
-            pass
-    return False
 
 
 def _slugify(name: str) -> str:
