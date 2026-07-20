@@ -77,6 +77,16 @@ CREATE TABLE IF NOT EXISTS download_status (
     last_attempt_ts INTEGER
 );
 
+CREATE TABLE IF NOT EXISTS transcripts (
+    video_id        TEXT PRIMARY KEY,          -- transcription is per-post, like download
+    text            TEXT,                      -- '' is a valid result (music-only audio)
+    language        TEXT,
+    language_probability REAL,
+    audio_duration  REAL,
+    model           TEXT,                      -- e.g. 'faster-whisper-distil-large-v3'
+    transcribed_ts  INTEGER
+);
+
 CREATE INDEX IF NOT EXISTS idx_membership_video   ON memberships(video_id);
 CREATE INDEX IF NOT EXISTS idx_membership_source  ON memberships(source_type, source_id);
 CREATE INDEX IF NOT EXISTS idx_status_state       ON download_status(state);
@@ -263,6 +273,31 @@ class Manifest:
             (video_id, kind, num, local_path, sha256, filesize, _now()),
         )
 
+    def set_transcript(
+        self,
+        video_id: str,
+        text: str,
+        language: str | None,
+        language_probability: float | None,
+        audio_duration: float | None,
+        model: str | None,
+    ) -> None:
+        """Record a transcription result. Empty text is stored (it means the
+        audio carried no recognizable speech) so the post is done, not retried."""
+        self.conn.execute(
+            """
+            INSERT INTO transcripts (video_id, text, language, language_probability,
+                audio_duration, model, transcribed_ts)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(video_id) DO UPDATE SET
+                text=excluded.text, language=excluded.language,
+                language_probability=excluded.language_probability,
+                audio_duration=excluded.audio_duration, model=excluded.model,
+                transcribed_ts=excluded.transcribed_ts
+            """,
+            (video_id, text, language, language_probability, audio_duration, model, _now()),
+        )
+
     def commit(self) -> None:
         self.conn.commit()
 
@@ -327,6 +362,30 @@ class Manifest:
             q += " AND source_id=?"
             args.append(source_id)
         return {r["video_id"] for r in self.conn.execute(q, tuple(args))}
+
+    def pending_transcriptions(self, limit: int | None = None) -> list[sqlite3.Row]:
+        """Downloaded videos with no transcript row yet. One row per post
+        (media_files is UNIQUE(video_id, kind, num) and videos are single-file),
+        oldest saves first so a resumed backfill stays deterministic."""
+        q = """
+            SELECT p.video_id, p.author_unique_id, p.duration, mf.local_path
+            FROM media_files mf
+            JOIN posts p ON p.video_id = mf.video_id
+            LEFT JOIN transcripts t ON t.video_id = mf.video_id
+            WHERE mf.kind = 'video' AND t.video_id IS NULL
+            ORDER BY p.first_seen_ts, p.video_id
+        """
+        args: tuple = ()
+        if limit is not None:
+            q += " LIMIT ?"
+            args = (limit,)
+        return list(self.conn.execute(q, args))
+
+    def transcript_counts(self) -> dict[str, int]:
+        row = self.conn.execute(
+            "SELECT COUNT(*) n, SUM(text = '') empty FROM transcripts"
+        ).fetchone()
+        return {"transcribed": row["n"] or 0, "empty": row["empty"] or 0}
 
     def all_canonical_urls(self) -> set[str]:
         rows = self.conn.execute(

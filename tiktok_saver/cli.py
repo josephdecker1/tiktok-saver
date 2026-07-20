@@ -5,6 +5,7 @@
     tiktok-saver download  --surface all   # fetch bytes for pending posts
     tiktok-saver run       --surface all   # enumerate + download in one pass
     tiktok-saver reconcile user_data.json  # optional: diff official export vs manifest
+    tiktok-saver transcribe                # send downloaded videos to the GPU Whisper box
     tiktok-saver status                    # counts by state; what's pending/gone/private
 """
 from __future__ import annotations
@@ -162,6 +163,37 @@ def _cmd_reconcile(args) -> int:
     return 0
 
 
+def _cmd_transcribe(args) -> int:
+    """Send downloaded videos without a transcript to the local GPU Whisper box
+    and store the text in the manifest. Serial (the box takes one job at a
+    time), resumable (re-runs pick up exactly the posts still missing)."""
+    from . import transcribe as tr
+
+    api_key = tr.resolve_api_key(args.api_key_env)
+    if not api_key:
+        print(f"✗ no API key in ${args.api_key_env}. Export it first "
+              f"(GCP-SM condensr_backend_home_transcription-api-key).", file=sys.stderr)
+        return 2
+    out_dir = Path(args.out)
+    manifest = Manifest(_manifest_path(args.username, out_dir))
+    try:
+        tally = tr.transcribe_all(
+            manifest, endpoint=args.endpoint, api_key=api_key, limit=args.limit)
+    except tr.BoxDown as e:
+        print(f"✗ {e}", file=sys.stderr)
+        manifest.close()
+        return 3
+    except (ValueError, RuntimeError) as e:
+        print(f"✗ {e}", file=sys.stderr)
+        manifest.close()
+        return 2
+    print("transcribe tally:", ", ".join(f"{k}={v}" for k, v in sorted(tally.items())))
+    counts = manifest.transcript_counts()
+    print(f"transcripts total: {counts['transcribed']} ({counts['empty']} empty)")
+    manifest.close()
+    return 0 if tally["errors"] == 0 else 1
+
+
 def _cmd_status(args) -> int:
     out_dir = Path(args.out)
     path = _manifest_path(args.username, out_dir)
@@ -247,6 +279,17 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(sp)
     sp.add_argument("export_path", help="path to user_data.json from TikTok's data export")
     sp.set_defaults(func=_cmd_reconcile)
+
+    sp = sub.add_parser("transcribe",
+                        help="transcribe downloaded videos on the local GPU Whisper box")
+    add_common(sp)
+    sp.add_argument("--endpoint", default="http://10.0.0.50:8002",
+                    help="GPU box base URL (default: %(default)s)")
+    sp.add_argument("--api-key-env", default="TRANSCRIPTION_API_KEY", metavar="VAR",
+                    help="env var holding the X-API-Key value (default: %(default)s)")
+    sp.add_argument("--limit", type=int, default=None,
+                    help="cap how many videos to transcribe this run (for test batches)")
+    sp.set_defaults(func=_cmd_transcribe)
 
     sp = sub.add_parser("status", help="show manifest counts by surface and state")
     add_common(sp)
