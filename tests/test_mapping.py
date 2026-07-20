@@ -28,9 +28,20 @@ def test_inversion_is_not_accidentally_swapped():
 
 
 def test_owner_only_flags():
+    # All three are owner-only: the folder list, Favorites and Liked all live
+    # behind owner-only profile tabs (verified live 2026-07-19).
     assert mapping.SURFACES["favorites"].owner_only is True
     assert mapping.SURFACES["liked"].owner_only is True
-    assert mapping.SURFACES["collections"].owner_only is False
+    assert mapping.SURFACES["collections"].owner_only is True
+
+
+def test_tab_names_match_live_ui():
+    # Verified live 2026-07-19: profile tabs are Videos / Favorites / Liked.
+    # Collections + Favorites both open from the Favorites tab; Likes from Liked.
+    assert mapping.SURFACES["favorites"].tab_name == "Favorites"
+    assert mapping.SURFACES["collections"].tab_name == "Favorites"
+    assert mapping.COLLECTIONS_FOLDERS.tab_name == "Favorites"
+    assert mapping.SURFACES["liked"].tab_name == "Liked"
 
 
 def test_resolve_all():
@@ -40,6 +51,26 @@ def test_resolve_all():
 
 def test_resolve_single():
     assert [s.key for s in mapping.resolve("liked")] == ["liked"]
+
+
+def test_resolve_multiple_preserves_order_and_dedups():
+    got = [s.key for s in mapping.resolve(["collections", "favorites", "collections"])]
+    assert got == ["collection", "favorites"]      # deduped, order kept, no liked
+
+
+def test_resolve_all_in_list_expands():
+    assert [s.key for s in mapping.resolve(["collections", "all"])] == \
+        ["collection", "favorites", "liked"]
+
+
+def test_keys_for_all_is_none():
+    # 'all' => no membership filter on downloads.
+    assert mapping.keys_for(["all"]) is None
+    assert mapping.keys_for("all") is None
+
+
+def test_keys_for_subset():
+    assert mapping.keys_for(["collections", "favorites"]) == ["collection", "favorites"]
 
 
 def test_resolve_unknown_raises():

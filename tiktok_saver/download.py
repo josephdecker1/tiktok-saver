@@ -69,7 +69,7 @@ def download_all(
     manifest: Manifest,
     out_dir: str | Path,
     cookies_txt: str | Path,
-    source_type: str | None = None,
+    source_types: "str | list[str] | None" = None,
     photos_only: bool = False,
     videos_only: bool = False,
     log: Callable[[str], None] = print,
@@ -86,7 +86,7 @@ def download_all(
     cookies_txt = str(cookies_txt)
 
     avail = tools_available()
-    pending = manifest.pending_downloads(source_type)
+    pending = manifest.pending_downloads(source_types)
     log(f"{len(pending)} post(s) pending download")
 
     tally: dict[str, int] = {}

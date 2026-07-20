@@ -34,6 +34,11 @@ class Surface:
     item_key      the array key inside the JSON response holding the items
     owner_only    True if the tab is only visible to the account owner (needs
                   the logged-in session and a tab click; no public deep-link)
+    tab_name      the profile tab whose click reveals this surface, matched by
+                  ``page.get_by_role("tab", name=tab_name)``. Verified live
+                  2026-07-19: profile tabs are Videos / Favorites / Liked, and
+                  the Favorites tab reveals BOTH the collection folder list and
+                  the saved-video ("collect") list. There is no Collections tab.
     """
 
     key: str
@@ -41,25 +46,32 @@ class Surface:
     list_substr: str
     item_key: str
     owner_only: bool
+    tab_name: str
 
 
 # The three item surfaces plus the folder-list surface. `item_key` is what the
 # response JSON nests the items under.
+# The collection folder list. Fires on the Favorites-tab click as
+# /api/user/collection_list/ (verified live 2026-07-19).
 COLLECTIONS_FOLDERS = Surface(
     key="collection_folders",
     ui_name="Collections (folder list)",
     list_substr="collection_list",
     item_key="collectionList",
-    owner_only=False,
+    owner_only=True,
+    tab_name="Favorites",
 )
 
 SURFACES: dict[str, Surface] = {
     "collections": Surface(
         key="collection",
         ui_name="Collections (videos inside a folder)",
+        # per-folder items come from a direct deep-link, not a tab click, but the
+        # folder LIST is revealed by the Favorites tab (see COLLECTIONS_FOLDERS).
         list_substr="collection/item_list",
         item_key="itemList",
-        owner_only=False,
+        owner_only=True,
+        tab_name="Favorites",
     ),
     # Favorites = the BOOKMARK / saved tab = "collect" on the wire.
     "favorites": Surface(
@@ -68,6 +80,7 @@ SURFACES: dict[str, Surface] = {
         list_substr="user/collect/item_list",
         item_key="itemList",
         owner_only=True,
+        tab_name="Favorites",
     ),
     # Likes = the HEART tab = "favorite" on the wire. The inversion lives here.
     "liked": Surface(
@@ -76,6 +89,7 @@ SURFACES: dict[str, Surface] = {
         list_substr="favorite/item_list",
         item_key="itemList",
         owner_only=True,
+        tab_name="Liked",
     ),
 }
 
@@ -84,13 +98,33 @@ SURFACES: dict[str, Surface] = {
 ITEM_SURFACE_KEYS = ("collections", "favorites", "liked")
 
 
-def resolve(surface_arg: str) -> list[Surface]:
-    """Map a CLI --surface value to the Surface objects to enumerate."""
-    if surface_arg == "all":
+def resolve(surface_arg: "str | list[str]") -> list[Surface]:
+    """Map CLI --surface value(s) to the Surface objects to enumerate.
+
+    Accepts a single value or a list, e.g. ``["collections", "favorites"]``.
+    ``all`` expands to every item surface. Order preserved, duplicates dropped.
+    """
+    args = [surface_arg] if isinstance(surface_arg, str) else list(surface_arg)
+    if "all" in args:
         return [SURFACES[k] for k in ITEM_SURFACE_KEYS]
-    if surface_arg not in SURFACES:
-        raise KeyError(
-            f"unknown surface {surface_arg!r}; valid: "
-            f"{', '.join(('all',) + ITEM_SURFACE_KEYS)}"
-        )
-    return [SURFACES[surface_arg]]
+    out: list[Surface] = []
+    seen: set[str] = set()
+    for a in args:
+        if a not in SURFACES:
+            raise KeyError(
+                f"unknown surface {a!r}; valid: "
+                f"{', '.join(('all',) + ITEM_SURFACE_KEYS)}"
+            )
+        if a not in seen:
+            seen.add(a)
+            out.append(SURFACES[a])
+    return out
+
+
+def keys_for(surface_arg: "str | list[str]") -> list[str] | None:
+    """The manifest source_type keys for the selected surfaces, or None for
+    'all' (meaning: don't filter downloads by membership)."""
+    args = [surface_arg] if isinstance(surface_arg, str) else list(surface_arg)
+    if "all" in args:
+        return None
+    return [s.key for s in resolve(args)]

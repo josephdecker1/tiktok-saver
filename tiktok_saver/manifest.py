@@ -266,11 +266,14 @@ class Manifest:
 
     # ----------------------------------------------------------------- reads
 
-    def pending_downloads(self, source_type: str | None = None) -> list[sqlite3.Row]:
+    def pending_downloads(
+        self, source_types: "str | list[str] | None" = None
+    ) -> list[sqlite3.Row]:
         """Posts needing a download: no media file yet AND not in a terminal
         state. ONE row per post (download is per-post, not per-list), so a video
-        saved AND liked is fetched once, never 2-3x. ``source_type`` restricts
-        to posts that are MEMBERS of that surface, without multiplying rows."""
+        in several lists is fetched once, never N times. ``source_types``
+        restricts to posts that are MEMBERS of any of those surfaces, without
+        multiplying rows."""
         q = """
             SELECT p.video_id, p.post_type, p.canonical_url,
                    p.author_unique_id, d.state
@@ -280,10 +283,13 @@ class Manifest:
               AND NOT EXISTS (SELECT 1 FROM media_files mf WHERE mf.video_id = p.video_id)
         """
         args: tuple = ()
-        if source_type:
-            q += (" AND EXISTS (SELECT 1 FROM memberships m "
-                  "WHERE m.video_id = p.video_id AND m.source_type = ?)")
-            args = (source_type,)
+        if source_types:
+            if isinstance(source_types, str):
+                source_types = [source_types]
+            placeholders = ",".join("?" * len(source_types))
+            q += (f" AND EXISTS (SELECT 1 FROM memberships m WHERE "
+                  f"m.video_id = p.video_id AND m.source_type IN ({placeholders}))")
+            args = tuple(source_types)
         return list(self.conn.execute(q, args))
 
     def status_counts(self) -> dict[str, int]:
