@@ -77,6 +77,7 @@ def _cmd_download(args) -> int:
     tally = dl.download_all(
         manifest, out_dir, cookies,
         source_types=stypes, photos_only=args.photos_only, videos_only=args.videos_only,
+        limit=args.limit,
     )
     print("download tally:", ", ".join(f"{k}={v}" for k, v in sorted(tally.items())) or "nothing to do")
     manifest.close()
@@ -164,6 +165,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="run Chrome headless (higher anti-bot risk; default off)")
         sp.add_argument("--photos-only", action="store_true", help="download only photo slideshows")
         sp.add_argument("--videos-only", action="store_true", help="download only videos")
+        sp.add_argument("--limit", type=int, default=None,
+                        help="cap how many posts to download this run (for test batches)")
         sp.set_defaults(func=func)
 
     sp = sub.add_parser("reconcile", help="diff official data export vs manifest")
