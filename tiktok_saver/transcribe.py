@@ -98,7 +98,8 @@ def transcribe_all(
     progress(f"transcribe: box ok — model {box_model}")
 
     pending = manifest.pending_transcriptions(limit=limit)
-    tally = {"transcribed": 0, "empty": 0, "errors": 0, "missing_file": 0}
+    tally = {"transcribed": 0, "empty": 0, "no_audio": 0, "errors": 0,
+             "missing_file": 0}
     consecutive_failures = 0
     total = len(pending)
     progress(f"transcribe: {total} video(s) pending")
@@ -140,6 +141,18 @@ def transcribe_all(
                 if not last_attempt:
                     time.sleep(5)  # 503 = busy/memory guard; brief backoff
                 continue
+            if resp.status_code == 400 and "Audio could not be processed" in resp.text:
+                # Silent video (no audio stream): the server's whisper has
+                # nothing to chew. That is a RESULT — no speech — not an error;
+                # record it as an empty transcript so the post is done forever.
+                manifest.set_transcript(
+                    row["video_id"], text="", language=None,
+                    language_probability=None, audio_duration=None,
+                    model=box_model)
+                manifest.commit()
+                tally["no_audio"] += 1
+                result = "no_audio"
+                break
             if resp.status_code != 200:
                 error = f"HTTP {resp.status_code}: {resp.text[:200]}"
                 break  # 4xx won't improve on retry
@@ -149,6 +162,8 @@ def transcribe_all(
         if result is None:
             tally["errors"] += 1
             progress(f"  [{i}/{total}] {row['video_id']}: FAILED ({error}) — left pending")
+            continue
+        if result == "no_audio":
             continue
 
         text = (result.get("text") or "").strip()

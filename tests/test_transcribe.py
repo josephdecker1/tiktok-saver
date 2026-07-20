@@ -55,7 +55,8 @@ def _ok_post(text="hello world"):
 def test_transcribes_pending_and_stores(tmp_path):
     m = _seed(tmp_path)
     tally = transcribe.transcribe_all(m, api_key="k", post_file=_ok_post())
-    assert tally == {"transcribed": 3, "empty": 0, "errors": 0, "missing_file": 0}
+    assert tally == {"transcribed": 3, "empty": 0, "no_audio": 0,
+                     "errors": 0, "missing_file": 0}
     rows = dict(m.conn.execute("SELECT video_id, text FROM transcripts"))
     assert rows == {"111": "hello world", "222": "hello world", "333": "hello world"}
     model = m.conn.execute("SELECT DISTINCT model FROM transcripts").fetchone()[0]
@@ -86,6 +87,23 @@ def test_empty_text_is_stored_as_done(tmp_path):
     tally = transcribe.transcribe_all(m, api_key="k", post_file=_ok_post(text="  "))
     assert tally["empty"] == 1 and tally["transcribed"] == 0
     assert m.pending_transcriptions() == []  # done, never retried
+
+
+def test_silent_video_400_stored_as_done(tmp_path):
+    """The box answers 400 'Audio could not be processed' for videos with no
+    audio stream — that is a no-speech RESULT, stored empty and never retried."""
+    m = _seed(tmp_path, vids=("111",))
+
+    def post(endpoint, key, path, timeout_s):
+        return FakeResp(status_code=400,
+                        text='{"detail":"Audio could not be processed: tuple index out of range"}')
+
+    tally = transcribe.transcribe_all(m, api_key="k", post_file=post)
+    assert tally["no_audio"] == 1 and tally["errors"] == 0
+    assert m.pending_transcriptions() == []          # done forever
+    text = m.conn.execute(
+        "SELECT text FROM transcripts WHERE video_id='111'").fetchone()[0]
+    assert text == ""
 
 
 def test_failed_post_leaves_post_pending(tmp_path):
