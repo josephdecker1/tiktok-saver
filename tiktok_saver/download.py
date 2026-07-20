@@ -74,9 +74,15 @@ def download_all(
     videos_only: bool = False,
     log: Callable[[str], None] = print,
 ) -> dict[str, int]:
-    """Download every pending post. Returns a state->count tally of this run."""
+    """Download every pending post. Returns a state->count tally of this run.
+
+    ``out_dir`` is the base; videos land in ``out_dir/videos`` and photo
+    slideshows in the SIBLING ``out_dir/photos`` (not nested under videos)."""
     out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    video_dir = out_dir / "videos"
+    photo_dir = out_dir / "photos"
+    video_dir.mkdir(parents=True, exist_ok=True)
+    photo_dir.mkdir(parents=True, exist_ok=True)
     cookies_txt = str(cookies_txt)
 
     avail = tools_available()
@@ -102,13 +108,13 @@ def download_all(
                 log(f"  SKIP image {vid}: gallery-dl not installed")
                 manifest.set_status(vid, "error", error="gallery-dl missing")
                 continue
-            state = _download_photo(vid, url, out_dir, cookies_txt, manifest, log)
+            state = _download_photo(vid, url, photo_dir, cookies_txt, manifest, log)
         else:
             if not avail["yt-dlp"]:
                 log(f"  SKIP video {vid}: yt-dlp not installed")
                 manifest.set_status(vid, "error", error="yt-dlp missing")
                 continue
-            state = _download_video(vid, url, out_dir, cookies_txt, manifest, log)
+            state = _download_video(vid, url, video_dir, cookies_txt, manifest, log)
 
         manifest.set_status(vid, state)
         manifest.commit()
@@ -137,8 +143,8 @@ def _download_video(vid, url, out_dir, cookies_txt, manifest: Manifest, log) -> 
     return state
 
 
-def _download_photo(vid, url, out_dir, cookies_txt, manifest: Manifest, log) -> str:
-    dest = Path(out_dir) / "photos" / vid
+def _download_photo(vid, url, photo_dir, cookies_txt, manifest: Manifest, log) -> str:
+    dest = Path(photo_dir) / vid                 # photo_dir is already <base>/photos
     cmd = _GALLERY_DL_BASE + [
         "--cookies", cookies_txt,
         "-D", str(dest),

@@ -47,11 +47,11 @@ uv run tiktok-saver status _jdeck_
 `--photos-only` / `--videos-only` restrict the download step. `--headless` runs Chrome
 without a window (higher anti-bot risk — leave it off for the first runs).
 
-Output (default `~/Downloads/TikTok/`):
+Output (default `~/Downloads/TikTok-collections/`):
 
 - `tt_manifest_<username>.db` — the SQLite manifest (posts, memberships, media, status)
-- `videos/` — downloaded videos (`<id>.mp4`) + `.info.json` sidecars
-- `videos/photos/<id>/` — slideshow images
+- `videos/<id>.mp4` — downloaded videos + `.info.json` sidecars
+- `photos/<id>/` — slideshow images (sibling of `videos/`)
 - `cookies_<username>.txt` — session cookies for the download step (gitignored; keep private)
 
 ### Optional: cross-check against TikTok's official export
