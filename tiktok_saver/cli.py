@@ -16,7 +16,7 @@ from pathlib import Path
 from . import __version__, mapping, session
 from .manifest import Manifest
 
-DEFAULT_OUT = Path.home() / "Downloads" / "TikTok"
+DEFAULT_OUT = Path.home() / "Downloads" / "TikTok-collections"
 
 
 def _manifest_path(username: str, out_dir: Path) -> Path:
@@ -75,7 +75,7 @@ def _cmd_download(args) -> int:
         return 1
     stype = None if args.surface == "all" else mapping.SURFACES[args.surface].key
     tally = dl.download_all(
-        manifest, out_dir / "videos", cookies,
+        manifest, out_dir, cookies,
         source_type=stype, photos_only=args.photos_only, videos_only=args.videos_only,
     )
     print("download tally:", ", ".join(f"{k}={v}" for k, v in sorted(tally.items())) or "nothing to do")

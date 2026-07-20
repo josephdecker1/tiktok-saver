@@ -15,6 +15,7 @@ outputs/
 # Tool runtime artifacts — never commit session cookies or downloaded media
 cookies_*.txt
 videos/
+photos/
 *.info.json
 .DS_Store
 
