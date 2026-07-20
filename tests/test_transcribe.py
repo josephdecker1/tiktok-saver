@@ -123,6 +123,49 @@ def test_box_down_circuit_breaker(tmp_path):
     assert m.transcript_counts()["transcribed"] == 0
 
 
+def test_breaker_resets_on_success_between_failures(tmp_path):
+    """CONSECUTIVE means consecutive: 2 files fail hard (4 transport errors),
+    one succeeds, another fails hard (2 more). Cumulative would be 6 >= 5 and
+    trip BoxDown; the reset on success must prevent that. (This is the exact
+    mutation an adversarial review shipped green without this test.)"""
+    m = _seed(tmp_path, vids=("100", "200", "300", "400"))
+
+    def post(endpoint, key, path, timeout_s):
+        if path.stem == "300":
+            return FakeResp(payload={"text": "ok", "language": "en",
+                                     "language_probability": 0.9, "duration": 30.0})
+        raise ConnectionError("reset")
+
+    tally = transcribe.transcribe_all(m, api_key="k", post_file=post)
+    assert tally["transcribed"] == 1 and tally["errors"] == 3
+
+
+def test_breaker_ignores_answered_5xx(tmp_path):
+    """A box that ANSWERS 5xx is up (busy/OOM-guarding), not down — the
+    breaker counts only transport failures, so 6 all-5xx files never trip it."""
+    m = _seed(tmp_path, vids=tuple(str(i) for i in range(100, 106)))
+
+    def post(endpoint, key, path, timeout_s):
+        return FakeResp(status_code=503, text="busy")
+
+    tally = transcribe.transcribe_all(m, api_key="k", post_file=post)
+    assert tally["errors"] == 6           # all failed…
+    assert m.transcript_counts()["transcribed"] == 0
+    # …but no BoxDown raised: reaching here IS the assertion.
+
+
+def test_code_bug_propagates_not_boxdown(tmp_path):
+    """A non-OSError from the post path is a code bug and must surface as
+    itself, never be absorbed into retry/box-down bookkeeping."""
+    m = _seed(tmp_path, vids=("111",))
+
+    def post(endpoint, key, path, timeout_s):
+        raise TypeError("client bug")
+
+    with pytest.raises(TypeError):
+        transcribe.transcribe_all(m, api_key="k", post_file=post)
+
+
 def test_missing_file_skipped(tmp_path):
     m = _seed(tmp_path, vids=("111",))
     (tmp_path / "111.mp4").unlink()
@@ -149,3 +192,16 @@ def test_pending_excludes_image_posts(tmp_path):
     m.add_media_file("999", "image", 0, str(img), 3)
     m.commit()
     assert [r["video_id"] for r in m.pending_transcriptions()] == ["111"]
+
+
+def test_transcript_export_rows_joins_collections(tmp_path):
+    m = _seed(tmp_path, vids=("111",))
+    m.add_membership("111", "collection", "c1", "bread", 0)
+    m.add_membership("111", "collection", "c2", "food", 0)
+    m.set_transcript("111", "how to score sourdough", "en", 0.9, 30.0, "m")
+    m.set_transcript("222", "", "en", 0.9, 30.0, "m")  # empty -> excluded
+    m.commit()
+    rows = m.transcript_export_rows()
+    assert len(rows) == 1
+    assert rows[0]["text"] == "how to score sourdough"
+    assert set(rows[0]["collections"].split(", ")) == {"bread", "food"}

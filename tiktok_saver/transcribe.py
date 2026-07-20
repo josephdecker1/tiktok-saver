@@ -114,9 +114,14 @@ def transcribe_all(
         result = None
         error: str | None = None
         for attempt in (1, 2):
+            last_attempt = attempt == 2
             try:
+                # OSError covers every curl_cffi transport error (its
+                # RequestException subclasses OSError) plus local file I/O;
+                # anything else is a code bug and must propagate, not be
+                # mislabeled "box down".
                 resp = post_file(endpoint, api_key, path, timeout_s)
-            except Exception as e:  # transport: connect refused/reset, timeout
+            except OSError as e:
                 error = f"{type(e).__name__}: {e}"
                 consecutive_failures += 1
                 if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
@@ -125,17 +130,20 @@ def transcribe_all(
                         f"{consecutive_failures} consecutive transport failures "
                         f"(last: {error}) — box down? Batch stopped; re-run resumes here."
                     )
-                time.sleep(2 * attempt)
+                if not last_attempt:
+                    time.sleep(2)
                 continue
-            if resp.status_code >= 500 or resp.status_code == 503:
+            # The box ANSWERED — whatever the status, it is up, not down.
+            consecutive_failures = 0
+            if resp.status_code >= 500:
                 error = f"HTTP {resp.status_code}: {resp.text[:200]}"
-                time.sleep(5 * attempt)  # 503 = busy/memory guard; brief backoff
+                if not last_attempt:
+                    time.sleep(5)  # 503 = busy/memory guard; brief backoff
                 continue
             if resp.status_code != 200:
                 error = f"HTTP {resp.status_code}: {resp.text[:200]}"
                 break  # 4xx won't improve on retry
             result = resp.json()
-            consecutive_failures = 0
             break
 
         if result is None:

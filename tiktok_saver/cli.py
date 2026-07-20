@@ -6,6 +6,9 @@
     tiktok-saver run       --surface all   # enumerate + download in one pass
     tiktok-saver reconcile user_data.json  # optional: diff official export vs manifest
     tiktok-saver transcribe                # send downloaded videos to the GPU Whisper box
+    tiktok-saver export-transcripts        # per-post transcript markdown for text indexing
+    tiktok-saver index-frames              # embed video frames + slideshow images (SigLIP 2)
+    tiktok-saver search "query"            # visual+transcript search over the archive
     tiktok-saver status                    # counts by state; what's pending/gone/private
 """
 from __future__ import annotations
@@ -194,6 +197,84 @@ def _cmd_transcribe(args) -> int:
     return 0 if tally["errors"] == 0 else 1
 
 
+def _cmd_export_transcripts(args) -> int:
+    """Write one markdown file per transcribed post into <out>/transcripts/ so
+    a text indexer (QMD) can pick the spoken content up. Deterministic and
+    idempotent — every run regenerates from the manifest."""
+    manifest = Manifest(_manifest_path(args.username, Path(args.out)))
+    dest = Path(args.out) / "transcripts"
+    dest.mkdir(parents=True, exist_ok=True)
+    n = 0
+    for r in manifest.transcript_export_rows():
+        author = r["author_nickname"] or r["author_unique_id"] or "?"
+        lines = [
+            f"# {author} — TikTok {r['video_id']}",
+            "",
+            f"- author: {author} (@{r['author_unique_id']})",
+            f"- url: {r['canonical_url']}",
+            f"- saved in: {r['collections'] or 'favorites'}",
+            f"- language: {r['language'] or '?'}  ·  duration: {r['duration'] or '?'}s",
+            "",
+        ]
+        if r["caption"]:
+            lines += [f"**Caption:** {r['caption']}", ""]
+        lines += ["## Transcript", "", r["text"], ""]
+        (dest / f"{r['video_id']}.md").write_text("\n".join(lines), encoding="utf-8")
+        n += 1
+    print(f"exported {n} transcript file(s) to {dest}")
+    manifest.close()
+    return 0
+
+
+def _cmd_index_frames(args) -> int:
+    """Embed sampled video frames + slideshow images into the manifest's visual
+    index (SigLIP 2 on MPS). Resumable per post; needs the [embed] extra."""
+    from . import embed
+
+    manifest = Manifest(_manifest_path(args.username, Path(args.out)))
+    try:
+        tally = embed.index_all(
+            manifest, limit=args.limit, batch_size=args.batch_size)
+    except RuntimeError as e:
+        print(f"✗ {e}", file=sys.stderr)
+        manifest.close()
+        return 2
+    print("index tally:", ", ".join(f"{k}={v}" for k, v in sorted(tally.items())))
+    counts = manifest.visual_index_counts()
+    print(f"visual index total: {counts['posts']} posts, {counts['vectors']} vectors")
+    manifest.close()
+    return 0 if tally["errors"] == 0 else 1
+
+
+def _cmd_search(args) -> int:
+    """Text search over the visual index; max frame score per post, transcript
+    snippet alongside."""
+    from . import embed
+
+    manifest = Manifest(_manifest_path(args.username, Path(args.out)))
+    try:
+        hits = embed.search(manifest, args.query, k=args.k)
+    except RuntimeError as e:
+        print(f"✗ {e}", file=sys.stderr)
+        manifest.close()
+        return 2
+    if not hits:
+        print("no results (is the visual index built? run index-frames)")
+        manifest.close()
+        return 1
+    for h in hits:
+        loc = f"@{h['match_ts']:.0f}s" if h["match_kind"] == "frame" else f"slide {int(h['match_ts'])}"
+        print(f"{h['score']:.3f}  {h['author'] or '?'} ({loc})  {h['canonical_url']}")
+        if h["caption"]:
+            print(f"       caption: {h['caption'][:120]}")
+        if h["transcript_snippet"]:
+            print(f"       said: {h['transcript_snippet'][:120]}")
+        if h["local_path"]:
+            print(f"       file: {h['local_path']}")
+    manifest.close()
+    return 0
+
+
 def _cmd_status(args) -> int:
     out_dir = Path(args.out)
     path = _manifest_path(args.username, out_dir)
@@ -290,6 +371,28 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--limit", type=int, default=None,
                     help="cap how many videos to transcribe this run (for test batches)")
     sp.set_defaults(func=_cmd_transcribe)
+
+    sp = sub.add_parser("export-transcripts",
+                        help="write per-post transcript markdown for text indexing (QMD)")
+    add_common(sp)
+    sp.set_defaults(func=_cmd_export_transcripts)
+
+    sp = sub.add_parser("index-frames",
+                        help="embed video frames + slideshow images (SigLIP 2, needs [embed] extra)")
+    add_common(sp)
+    sp.add_argument("--limit", type=int, default=None,
+                    help="cap how many posts to index this run (for test batches)")
+    sp.add_argument("--batch-size", type=int, default=16,
+                    help="images per embedding batch (default: %(default)s)")
+    sp.set_defaults(func=_cmd_index_frames)
+
+    sp = sub.add_parser("search", help="text search over the visual index")
+    add_common(sp, username=False)
+    sp.add_argument("query", help="what to look for, in plain words")
+    sp.add_argument("username", nargs="?", default="_jdeck_",
+                    help="TikTok username (default: _jdeck_)")
+    sp.add_argument("-k", type=int, default=10, help="results to show (default: %(default)s)")
+    sp.set_defaults(func=_cmd_search)
 
     sp = sub.add_parser("status", help="show manifest counts by surface and state")
     add_common(sp)
