@@ -72,15 +72,57 @@ def _make_handler(captures: list[tuple[str, Capture]], log: Callable[[str], None
     return handler
 
 
-def _autoscroll_until_done(page, cap: Capture, log: Callable[[str], None]) -> None:
+def _hits_known_watermark(order: list[str], known_ids: set[str], k: int) -> bool:
+    """True if scanning ``order`` (newest-first capture order) ever reaches ``k``
+    consecutive already-known ids. Pure + unit-tested: this is the incremental
+    stop rule. New saves sit at the top, so once we cross the newest-known
+    boundary everything below is old — k consecutive knowns means we're past it.
+    The k-run (not a single hit) tolerates a pinned/promoted item near the top."""
+    if k <= 0:
+        return False                 # no watermark => never early-stop
+    consec = 0
+    for vid in order:
+        consec = consec + 1 if vid in known_ids else 0
+        if consec >= k:
+            return True
+    return False
+
+
+def _autoscroll_until_done(
+    page,
+    cap: Capture,
+    log: Callable[[str], None],
+    known_ids: "set[str] | None" = None,
+    stop_after_known: int = 0,
+) -> None:
     """Scroll to the bottom repeatedly until the API says hasMore=false or the
-    id count plateaus."""
+    id count plateaus.
+
+    When ``known_ids`` and ``stop_after_known`` are given (incremental sync),
+    also stop once ``stop_after_known`` consecutive already-known ids appear in
+    capture order — the early-stop that makes a re-sync cheap."""
+
+    def _early_stop() -> bool:
+        return bool(known_ids) and stop_after_known > 0 and _hits_known_watermark(
+            cap.order, known_ids, stop_after_known)
+
+    if _early_stop():
+        # New saves above the known run (if any) are already in cap.order and get
+        # persisted by the caller — so don't claim "nothing new"; just note we hit
+        # the watermark on the first page.
+        log(f"    incremental: reached known watermark on the first page — "
+            f"no further scrolling")
+        return
+
     plateau = 0
     for i in range(MAX_SCROLLS):
         before = len(cap.items)
         page.mouse.wheel(0, 20000)
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         time.sleep(SCROLL_PAUSE_S)
+        if _early_stop():
+            log(f"    incremental: hit known watermark after {i + 1} scrolls — stopping")
+            return
         gained = len(cap.items) - before
         if gained == 0:
             plateau += 1
@@ -126,11 +168,16 @@ def enumerate_collections(
     username: str,
     manifest: Manifest,
     log: Callable[[str], None] = print,
+    incremental: bool = False,
+    stop_after_known: int = 3,
 ) -> dict[str, int]:
     """Walk the collection FOLDER list, then each folder's videos.
 
-    Returns {collection_name: item_count}. Folders are public (secUid-addressed)
-    so no owner tab click is needed for the folder list itself.
+    Returns {collection_name: item_count}. The folder LIST is always fetched in
+    full (it's small, and new folders must be detected). When ``incremental``,
+    each folder's items stop early once ``stop_after_known`` consecutive
+    already-known ids appear — a brand-new folder has no known ids, so it fetches
+    in full.
     """
     page = context.new_page()
     folder_cap = Capture(item_key=mapping.COLLECTIONS_FOLDERS.item_key)
@@ -145,7 +192,7 @@ def enumerate_collections(
     if not _click_tab(page, mapping.COLLECTIONS_FOLDERS.tab_name, log):
         log("  WARNING: could not open Favorites tab — is this YOUR account, "
             "logged in? (collections live under Favorites)")
-    _autoscroll_until_done(page, folder_cap, log)
+    _autoscroll_until_done(page, folder_cap, log)   # folder list: always full
 
     result: dict[str, int] = {}
     folders = [folder_cap.items[i] for i in folder_cap.order]
@@ -171,7 +218,9 @@ def enumerate_collections(
             wait_until="domcontentloaded",
         )
         time.sleep(2)
-        _autoscroll_until_done(fpage, item_cap, log)
+        known = manifest.known_video_ids("collection", cid) if incremental else None
+        _autoscroll_until_done(fpage, item_cap, log,
+                               known_ids=known, stop_after_known=stop_after_known)
         _persist(manifest, item_cap, source_type="collection", source_id=cid, source_name=name)
         result[name] = len(item_cap.items)
         fpage.close()
@@ -186,8 +235,13 @@ def enumerate_item_surface(
     surface: mapping.Surface,
     manifest: Manifest,
     log: Callable[[str], None] = print,
+    incremental: bool = False,
+    stop_after_known: int = 3,
 ) -> int:
-    """Walk the Favorites (saved) or Likes surface. Both are owner-only tabs."""
+    """Walk the Favorites (saved) or Likes surface. Both are owner-only tabs.
+
+    When ``incremental``, stop scrolling once ``stop_after_known`` consecutive
+    already-known ids appear (the newest saves sit at the top)."""
     page = context.new_page()
     cap = Capture(item_key=surface.item_key)
     page.on("response", _make_handler([(surface.list_substr, cap)], log))
@@ -198,7 +252,9 @@ def enumerate_item_surface(
     if surface.owner_only and not _click_tab(page, surface.tab_name, log):
         log(f"  WARNING: could not open the '{surface.tab_name}' tab — is this YOUR "
             f"account and are you logged in? (owner-only tab)")
-    _autoscroll_until_done(page, cap, log)
+    known = manifest.known_video_ids(surface.key) if incremental else None
+    _autoscroll_until_done(page, cap, log,
+                           known_ids=known, stop_after_known=stop_after_known)
     _persist(manifest, cap, source_type=surface.key, source_id="_self",
              source_name=surface.key)
     manifest.commit()

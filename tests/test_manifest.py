@@ -138,6 +138,23 @@ def test_pending_source_filter_by_membership(tmp_path):
     assert liked == {"liked_only"}
 
 
+def test_known_video_ids_by_surface_and_folder(tmp_path):
+    m = Manifest(tmp_path / "t.db")
+    m.upsert_post(_video_item("a"))
+    m.upsert_post(_video_item("b"))
+    m.upsert_post(_video_item("c"))
+    m.add_membership("a", "collection", "c1", "Recipes", 0)
+    m.add_membership("b", "collection", "c2", "Workouts", 0)
+    m.add_membership("c", "favorites", "_self", "favorites", 0)
+    m.commit()
+    # all collection ids across folders
+    assert m.known_video_ids("collection") == {"a", "b"}
+    # scoped to one folder
+    assert m.known_video_ids("collection", "c1") == {"a"}
+    assert m.known_video_ids("favorites") == {"c"}
+    assert m.known_video_ids("liked") == set()
+
+
 def test_pending_source_filter_accepts_list(tmp_path):
     m = Manifest(tmp_path / "t.db")
     for v, st in (("c", "collection"), ("f", "favorites"), ("l", "liked")):
