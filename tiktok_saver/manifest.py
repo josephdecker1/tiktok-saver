@@ -49,7 +49,9 @@ CREATE TABLE IF NOT EXISTS memberships (
     source_type  TEXT,                       -- 'collection' | 'favorites' | 'liked'
     source_id    TEXT,                       -- collectionId, or '_self' for favorites/liked
     source_name  TEXT,                       -- folder name, or the surface name
-    position     INTEGER,                    -- order first seen within the source
+    position     INTEGER,                    -- first-seen order within ONE capture; NOT a
+                                             -- global rank (incremental runs restart at 0),
+                                             -- currently written but never read
     first_seen_ts INTEGER,
     PRIMARY KEY (video_id, source_type, source_id)
 );

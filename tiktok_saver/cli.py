@@ -93,7 +93,9 @@ def _cmd_run(args) -> int:
 
 def _cmd_sync(args) -> int:
     """Incremental sync: capture only posts saved since last run, then download
-    them. `--full` re-scrapes everything (reconciliation / removals)."""
+    them. `--full` re-scrapes every surface end-to-end instead of stopping at the
+    known watermark. (Detecting un-saves / removals is a later phase — `--full`
+    does not yet prune them.)"""
     from . import enumerate as enum
 
     out_dir = Path(args.out)
@@ -125,12 +127,12 @@ def _cmd_sync(args) -> int:
                     ctx, args.username, surface, manifest,
                     incremental=incremental, stop_after_known=args.stop_after_known)
 
-    total_new = 0
+    all_new: set[str] = set()
     for s in surfaces:
         new = manifest.known_video_ids(s.key) - before[s.key]
-        total_new += len(new)
+        all_new |= new           # union: a post new to two surfaces counts once
         print(f"  {s.ui_name}: {len(new)} new")
-    print(f"sync: {total_new} new post(s) captured")
+    print(f"sync: {len(all_new)} new post(s) captured")
     _print_status(manifest)
 
     if not args.no_download:
@@ -230,8 +232,8 @@ def build_parser() -> argparse.ArgumentParser:
                     choices=["all", *mapping.ITEM_SURFACE_KEYS], metavar="SURFACE",
                     help="surfaces to sync (default: collections favorites)")
     sp.add_argument("--full", action="store_true",
-                    help="re-scrape everything instead of stopping at the watermark "
-                         "(reconciliation; catches removals)")
+                    help="re-scrape every surface end-to-end instead of stopping at "
+                         "the known watermark (does not yet prune removed items)")
     sp.add_argument("--no-download", action="store_true",
                     help="capture new saves into the manifest but don't download")
     sp.add_argument("--stop-after-known", type=int, default=3, metavar="N",

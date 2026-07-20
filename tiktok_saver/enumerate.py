@@ -78,6 +78,8 @@ def _hits_known_watermark(order: list[str], known_ids: set[str], k: int) -> bool
     stop rule. New saves sit at the top, so once we cross the newest-known
     boundary everything below is old — k consecutive knowns means we're past it.
     The k-run (not a single hit) tolerates a pinned/promoted item near the top."""
+    if k <= 0:
+        return False                 # no watermark => never early-stop
     consec = 0
     for vid in order:
         consec = consec + 1 if vid in known_ids else 0
@@ -105,8 +107,11 @@ def _autoscroll_until_done(
             cap.order, known_ids, stop_after_known)
 
     if _early_stop():
-        log(f"    incremental: {stop_after_known} known ids already in first page "
-            f"— nothing new here")
+        # New saves above the known run (if any) are already in cap.order and get
+        # persisted by the caller — so don't claim "nothing new"; just note we hit
+        # the watermark on the first page.
+        log(f"    incremental: reached known watermark on the first page — "
+            f"no further scrolling")
         return
 
     plateau = 0
