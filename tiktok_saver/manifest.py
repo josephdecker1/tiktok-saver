@@ -314,6 +314,18 @@ class Manifest:
         )
         return [(r["source_id"], r["source_name"], r["n"]) for r in rows]
 
+    def known_video_ids(
+        self, source_type: str, source_id: str | None = None
+    ) -> set[str]:
+        """Video ids already recorded for a surface (the incremental watermark
+        source). Pass ``source_id`` to scope to one collection folder."""
+        q = "SELECT DISTINCT video_id FROM memberships WHERE source_type=?"
+        args: list = [source_type]
+        if source_id is not None:
+            q += " AND source_id=?"
+            args.append(source_id)
+        return {r["video_id"] for r in self.conn.execute(q, tuple(args))}
+
     def all_canonical_urls(self) -> set[str]:
         rows = self.conn.execute(
             "SELECT canonical_url FROM posts WHERE canonical_url IS NOT NULL"

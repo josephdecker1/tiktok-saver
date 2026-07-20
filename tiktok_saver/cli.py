@@ -91,6 +91,61 @@ def _cmd_run(args) -> int:
     return _cmd_download(args)
 
 
+def _cmd_sync(args) -> int:
+    """Incremental sync: capture only posts saved since last run, then download
+    them. `--full` re-scrapes everything (reconciliation / removals)."""
+    from . import enumerate as enum
+
+    out_dir = Path(args.out)
+    manifest = Manifest(_manifest_path(args.username, out_dir))
+    surfaces = _resolve_or_die(args.surface)
+    incremental = not args.full
+    mode = "full re-scrape" if args.full else "incremental"
+    print(f"sync ({mode}) — surfaces: {', '.join(s.key for s in surfaces)}")
+
+    # Snapshot known ids per surface so we can report what's NEW this run.
+    before = {s.key: manifest.known_video_ids(s.key) for s in surfaces}
+
+    with session.browser_context(headless=args.headless) as ctx:
+        if not session.is_logged_in(ctx):
+            # A scheduled run with an expired session must be loud, not a silent
+            # no-op (plan: session-expiry handling).
+            print("✗ not logged in (sessionid missing). Run `tiktok-saver login`.",
+                  file=sys.stderr)
+            manifest.close()
+            return 2
+        session.export_cookies_txt(ctx, out_dir / f"cookies_{args.username}.txt")
+        for surface in surfaces:
+            if surface.key == "collection":
+                enum.enumerate_collections(
+                    ctx, args.username, manifest,
+                    incremental=incremental, stop_after_known=args.stop_after_known)
+            else:
+                enum.enumerate_item_surface(
+                    ctx, args.username, surface, manifest,
+                    incremental=incremental, stop_after_known=args.stop_after_known)
+
+    total_new = 0
+    for s in surfaces:
+        new = manifest.known_video_ids(s.key) - before[s.key]
+        total_new += len(new)
+        print(f"  {s.ui_name}: {len(new)} new")
+    print(f"sync: {total_new} new post(s) captured")
+    _print_status(manifest)
+
+    if not args.no_download:
+        from . import download as dl
+        cookies = out_dir / f"cookies_{args.username}.txt"
+        stypes = mapping.keys_for(args.surface)
+        tally = dl.download_all(
+            manifest, out_dir, cookies, source_types=stypes,
+            photos_only=args.photos_only, videos_only=args.videos_only)
+        print("download tally:", ", ".join(f"{k}={v}" for k, v in sorted(tally.items()))
+              or "nothing to do")
+    manifest.close()
+    return 0
+
+
 def _cmd_reconcile(args) -> int:
     from . import reconcile as rec
 
@@ -168,6 +223,23 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--limit", type=int, default=None,
                         help="cap how many posts to download this run (for test batches)")
         sp.set_defaults(func=func)
+
+    sp = sub.add_parser("sync", help="incremental sync: capture + download only new saves")
+    add_common(sp)
+    sp.add_argument("--surface", nargs="+", default=["collections", "favorites"],
+                    choices=["all", *mapping.ITEM_SURFACE_KEYS], metavar="SURFACE",
+                    help="surfaces to sync (default: collections favorites)")
+    sp.add_argument("--full", action="store_true",
+                    help="re-scrape everything instead of stopping at the watermark "
+                         "(reconciliation; catches removals)")
+    sp.add_argument("--no-download", action="store_true",
+                    help="capture new saves into the manifest but don't download")
+    sp.add_argument("--stop-after-known", type=int, default=3, metavar="N",
+                    help="stop a surface after N consecutive already-known posts (default: 3)")
+    sp.add_argument("--headless", action="store_true", help="run Chrome headless")
+    sp.add_argument("--photos-only", action="store_true", help="download only photo slideshows")
+    sp.add_argument("--videos-only", action="store_true", help="download only videos")
+    sp.set_defaults(func=_cmd_sync)
 
     sp = sub.add_parser("reconcile", help="diff official data export vs manifest")
     add_common(sp)
