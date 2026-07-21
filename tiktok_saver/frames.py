@@ -56,14 +56,23 @@ def extract_frames(
     pattern = workdir / "f_%04d.jpg"
     result = run(ffmpeg_cmd(video_path, pattern, fps),
                  capture_output=True, text=True, timeout=300)
-    if result.returncode != 0:
-        # A handful of TikToks carry color-space metadata the scale filter
-        # rejects ("Invalid color space"). Retry once without scaling — the
-        # embedding processor resizes anyway; native-res JPEGs just cost a
-        # little more temp disk.
-        cmd = [a for a in ffmpeg_cmd(video_path, pattern, fps)]
-        cmd[cmd.index("-vf") + 1] = f"fps={fps:.6f}"
-        result = run(cmd, capture_output=True, text=True, timeout=300)
+    if result.returncode != 0 and "Invalid color space" in (result.stderr or ""):
+        # Some TikTok HEVC streams declare colour metadata as "reserved",
+        # which ffmpeg 7 rejects when configuring ANY filter graph (verified:
+        # fps-only and setparams variants fail identically). The fix is to
+        # rewrite the VUI colour fields via the hevc_metadata bitstream filter
+        # (remux, no re-encode) and extract from the corrected copy.
+        fixed = workdir / "colorfix.mp4"
+        remux = run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(video_path),
+             "-c", "copy", "-bsf:v",
+             "hevc_metadata=colour_primaries=1:transfer_characteristics=6:"
+             "matrix_coefficients=1", str(fixed)],
+            capture_output=True, text=True, timeout=300)
+        if remux.returncode == 0:
+            result = run(ffmpeg_cmd(fixed, pattern, fps),
+                         capture_output=True, text=True, timeout=300)
+            fixed.unlink(missing_ok=True)
     if result.returncode != 0:
         raise RuntimeError(
             f"ffmpeg failed on {video_path.name}: {(result.stderr or '')[:300]}")
