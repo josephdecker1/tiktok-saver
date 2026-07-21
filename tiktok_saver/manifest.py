@@ -508,6 +508,32 @@ class Manifest:
                 "SELECT video_id, text FROM transcripts WHERE text != ''")
             self.conn.commit()
 
+    def topic_posts(self, source_id: str | None = None) -> list[sqlite3.Row]:
+        """Everything a wiki page needs for one topic. ``source_id`` selects a
+        collection folder; ``None`` selects UNCOLLECTED favorites (saved but in
+        no folder). Newest saves first."""
+        base = """
+            SELECT DISTINCT p.video_id, p.post_type, p.author_nickname,
+                   p.author_unique_id, p.caption, p.canonical_url,
+                   p.view_count, p.like_count, t.text AS transcript
+            FROM memberships m
+            JOIN posts p ON p.video_id = m.video_id
+            LEFT JOIN transcripts t ON t.video_id = p.video_id
+        """
+        if source_id is not None:
+            q = base + """
+                WHERE m.source_type = 'collection' AND m.source_id = ?
+                ORDER BY p.first_seen_ts DESC, p.video_id"""
+            args: tuple = (source_id,)
+        else:
+            q = base + """
+                WHERE m.source_type = 'favorites' AND NOT EXISTS (
+                    SELECT 1 FROM memberships c
+                    WHERE c.video_id = p.video_id AND c.source_type = 'collection')
+                ORDER BY p.first_seen_ts DESC, p.video_id"""
+            args = ()
+        return list(self.conn.execute(q, args))
+
     def transcript_export_rows(self) -> list[sqlite3.Row]:
         """Everything the markdown export needs, one row per post with a
         non-empty transcript; collection names pre-joined."""
