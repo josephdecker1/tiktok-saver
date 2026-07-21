@@ -1,16 +1,18 @@
-"""Transcribe downloaded videos on the local GPU Whisper box.
+"""Transcribe downloaded videos via a Whisper transcription server.
 
-The box (WSL 5070 Ti, cdnsr-gpu-server) exposes ``POST /transcribe``: multipart
-``file`` upload authenticated with ``X-API-Key``; ``video/mp4`` is accepted
-directly (the server extracts audio itself). Response:
-``{"text", "language", "language_probability", "duration"}``.
+Expected server API (README.md → Transcription documents the same contract):
+``POST /transcribe`` — multipart ``file`` upload authenticated with
+``X-API-Key``; ``video/mp4`` is accepted directly (the server extracts audio
+itself). Response: ``{"text", "language", "language_probability",
+"duration"}``. ``GET /health`` (same auth header) must return JSON including
+a ``model`` field — used as the preflight and to record which model
+transcribed each post.
 
-The server serializes work (``concurrent_limit: 1`` and its semaphore is
-acquired before the upload is even read), so this runner is deliberately
-serial — client-side concurrency would only hold connections open. Results go
-into the manifest's ``transcripts`` table keyed by post, which also makes the
-run resumable by construction: a re-run picks up exactly the posts without a
-transcript row.
+The runner is deliberately serial — typical single-GPU servers serialize work
+anyway, so client-side concurrency would only hold connections open. Results
+go into the manifest's ``transcripts`` table keyed by post, which also makes
+the run resumable by construction: a re-run picks up exactly the posts
+without a transcript row.
 """
 from __future__ import annotations
 
@@ -23,7 +25,7 @@ from curl_cffi import CurlMime, requests
 
 from .manifest import Manifest
 
-DEFAULT_ENDPOINT = "http://10.0.0.50:8002"
+ENDPOINT_ENV = "TIKTOK_TRANSCRIBE_ENDPOINT"
 API_KEY_ENV = "TRANSCRIPTION_API_KEY"
 
 # Give the box 3x realtime plus queue headroom per request. The measured rate is
@@ -33,12 +35,12 @@ TIMEOUT_FLOOR_S = 180
 TIMEOUT_PER_AUDIO_S = 3.0
 
 # A run aborts after this many CONSECUTIVE transport failures — that is the
-# box-down signature (WSL dead / portproxy stale), not per-file bad luck.
+# server-down signature (host dead, port-forward stale), not per-file bad luck.
 MAX_CONSECUTIVE_FAILURES = 5
 
 
 class BoxDown(RuntimeError):
-    """The GPU box stopped answering; the batch should stop, not spin."""
+    """The transcription server stopped answering; the batch should stop, not spin."""
 
 
 # The box checks Content-Type against its allowlist; both these and the
@@ -90,18 +92,20 @@ def preflight(endpoint: str, api_key: str) -> str:
 
 def transcribe_all(
     manifest: Manifest,
-    endpoint: str = DEFAULT_ENDPOINT,
+    endpoint: str,
     api_key: str | None = None,
     limit: int | None = None,
     post_file: Callable = _post_file,
     progress: Callable[[str], None] = print,
 ) -> dict[str, int]:
-    """Send every pending video to the box; store results; return a tally.
+    """Send every pending video to the server; store results; return a tally.
 
     Per file: one retry on a transport error or 5xx, then the post is left
     pending (a later run retries it). Empty transcript text is a RESULT
     (music-only audio) and is stored, so the post never re-runs.
     """
+    if not endpoint:
+        raise ValueError(f"no endpoint — set ${ENDPOINT_ENV} or pass --endpoint")
     if not api_key:
         raise ValueError(f"no API key — set ${API_KEY_ENV} or pass --api-key-env")
 

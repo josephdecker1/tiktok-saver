@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Callable
@@ -75,9 +76,16 @@ concluding filler section.
 
 def _run_claude(prompt: str, model: str, claude_bin: str = "claude",
                 run=subprocess.run) -> str:
+    # cwd is pinned to a project-free directory: `claude -p` loads project
+    # settings (hooks included) from the inherited cwd, and a caller sitting
+    # inside a repo with Stop/UserPromptSubmit hooks can have the final reply
+    # hijacked by a hook's injected challenge instead of the page (observed
+    # live 2026-07-20: a groundedness hook turned money-heavy pages into
+    # "Groundedness check response:" replies). User-level settings still apply.
     result = run(
         [claude_bin, "-p", prompt, "--model", model, "--tools", ""],
-        capture_output=True, text=True, timeout=PAGE_TIMEOUT_S)
+        capture_output=True, text=True, timeout=PAGE_TIMEOUT_S,
+        cwd=tempfile.gettempdir())
     if result.returncode != 0:
         raise RuntimeError(
             f"claude -p failed (rc={result.returncode}): {(result.stderr or '')[:300]}")

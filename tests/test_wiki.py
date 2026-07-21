@@ -125,12 +125,17 @@ def test_run_claude_salvages_preamble(monkeypatch):
 
 def test_run_claude_pins_tool_lockdown():
     """Captions/transcripts are untrusted input — the headless call MUST run
-    with all tools disabled. This pins the --tools "" flag so a refactor
-    cannot drop it silently."""
+    with all tools disabled AND from a project-free cwd (a repo cwd loads that
+    project's hooks, which can hijack the reply). This pins the --tools ""
+    flag and the neutral cwd so a refactor cannot drop either silently."""
+    import tempfile
+
     seen_argv = []
+    seen_kw = {}
 
     def fake_run(cmd, **kw):
         seen_argv.extend(cmd)
+        seen_kw.update(kw)
         class R:
             returncode = 0
             stderr = ""
@@ -140,6 +145,7 @@ def test_run_claude_pins_tool_lockdown():
     wiki._run_claude("prompt", "some-model", run=fake_run)
     i = seen_argv.index("--tools")
     assert seen_argv[i + 1] == ""
+    assert seen_kw.get("cwd") == tempfile.gettempdir()
 
 
 def test_run_claude_strips_trailing_fence():

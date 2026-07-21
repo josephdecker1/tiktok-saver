@@ -54,7 +54,7 @@ def _ok_post(text="hello world"):
 
 def test_transcribes_pending_and_stores(tmp_path):
     m = _seed(tmp_path)
-    tally = transcribe.transcribe_all(m, api_key="k", post_file=_ok_post())
+    tally = transcribe.transcribe_all(m, endpoint="http://box.test", api_key="k", post_file=_ok_post())
     assert tally == {"transcribed": 3, "empty": 0, "no_audio": 0,
                      "errors": 0, "missing_file": 0}
     rows = dict(m.conn.execute("SELECT video_id, text FROM transcripts"))
@@ -74,7 +74,7 @@ def test_rerun_skips_already_transcribed(tmp_path):
         return FakeResp(payload={"text": "t", "language": "en",
                                  "language_probability": 0.9, "duration": 30.0})
 
-    transcribe.transcribe_all(m, api_key="k", post_file=post)
+    transcribe.transcribe_all(m, endpoint="http://box.test", api_key="k", post_file=post)
     assert "111" not in seen and set(seen) == {"222", "333"}
     # The existing transcript was not clobbered.
     text = m.conn.execute(
@@ -84,7 +84,7 @@ def test_rerun_skips_already_transcribed(tmp_path):
 
 def test_empty_text_is_stored_as_done(tmp_path):
     m = _seed(tmp_path, vids=("111",))
-    tally = transcribe.transcribe_all(m, api_key="k", post_file=_ok_post(text="  "))
+    tally = transcribe.transcribe_all(m, endpoint="http://box.test", api_key="k", post_file=_ok_post(text="  "))
     assert tally["empty"] == 1 and tally["transcribed"] == 0
     assert m.pending_transcriptions() == []  # done, never retried
 
@@ -98,7 +98,7 @@ def test_silent_video_400_stored_as_done(tmp_path):
         return FakeResp(status_code=400,
                         text='{"detail":"Audio could not be processed: tuple index out of range"}')
 
-    tally = transcribe.transcribe_all(m, api_key="k", post_file=post)
+    tally = transcribe.transcribe_all(m, endpoint="http://box.test", api_key="k", post_file=post)
     assert tally["no_audio"] == 1 and tally["errors"] == 0
     assert m.pending_transcriptions() == []          # done forever
     text = m.conn.execute(
@@ -112,7 +112,7 @@ def test_failed_post_leaves_post_pending(tmp_path):
     def post(endpoint, key, path, timeout_s):
         return FakeResp(status_code=500, text="boom")
 
-    tally = transcribe.transcribe_all(m, api_key="k", post_file=post)
+    tally = transcribe.transcribe_all(m, endpoint="http://box.test", api_key="k", post_file=post)
     assert tally["errors"] == 1
     assert [r["video_id"] for r in m.pending_transcriptions()] == ["111"]
 
@@ -125,7 +125,7 @@ def test_4xx_does_not_retry(tmp_path):
         calls.append(1)
         return FakeResp(status_code=415, text="bad type")
 
-    tally = transcribe.transcribe_all(m, api_key="k", post_file=post)
+    tally = transcribe.transcribe_all(m, endpoint="http://box.test", api_key="k", post_file=post)
     assert len(calls) == 1 and tally["errors"] == 1
 
 
@@ -136,7 +136,7 @@ def test_box_down_circuit_breaker(tmp_path):
         raise ConnectionError("connection reset")
 
     with pytest.raises(transcribe.BoxDown):
-        transcribe.transcribe_all(m, api_key="k", post_file=post)
+        transcribe.transcribe_all(m, endpoint="http://box.test", api_key="k", post_file=post)
     # Nothing was recorded as transcribed.
     assert m.transcript_counts()["transcribed"] == 0
 
@@ -154,7 +154,7 @@ def test_breaker_resets_on_success_between_failures(tmp_path):
                                      "language_probability": 0.9, "duration": 30.0})
         raise ConnectionError("reset")
 
-    tally = transcribe.transcribe_all(m, api_key="k", post_file=post)
+    tally = transcribe.transcribe_all(m, endpoint="http://box.test", api_key="k", post_file=post)
     assert tally["transcribed"] == 1 and tally["errors"] == 3
 
 
@@ -166,7 +166,7 @@ def test_breaker_ignores_answered_5xx(tmp_path):
     def post(endpoint, key, path, timeout_s):
         return FakeResp(status_code=503, text="busy")
 
-    tally = transcribe.transcribe_all(m, api_key="k", post_file=post)
+    tally = transcribe.transcribe_all(m, endpoint="http://box.test", api_key="k", post_file=post)
     assert tally["errors"] == 6           # all failed…
     assert m.transcript_counts()["transcribed"] == 0
     # …but no BoxDown raised: reaching here IS the assertion.
@@ -181,13 +181,13 @@ def test_code_bug_propagates_not_boxdown(tmp_path):
         raise TypeError("client bug")
 
     with pytest.raises(TypeError):
-        transcribe.transcribe_all(m, api_key="k", post_file=post)
+        transcribe.transcribe_all(m, endpoint="http://box.test", api_key="k", post_file=post)
 
 
 def test_missing_file_skipped(tmp_path):
     m = _seed(tmp_path, vids=("111",))
     (tmp_path / "111.mp4").unlink()
-    tally = transcribe.transcribe_all(m, api_key="k", post_file=_ok_post())
+    tally = transcribe.transcribe_all(m, endpoint="http://box.test", api_key="k", post_file=_ok_post())
     assert tally["missing_file"] == 1
     # Still pending — a future run after a re-download picks it up.
     assert [r["video_id"] for r in m.pending_transcriptions()] == ["111"]
@@ -196,7 +196,15 @@ def test_missing_file_skipped(tmp_path):
 def test_no_api_key_raises(tmp_path):
     m = _seed(tmp_path, vids=("111",))
     with pytest.raises(ValueError):
-        transcribe.transcribe_all(m, api_key=None)
+        transcribe.transcribe_all(m, endpoint="http://box.test", api_key=None)
+
+
+def test_no_endpoint_raises(tmp_path):
+    """No baked-in endpoint default: an unset endpoint must fail loudly, not
+    silently target someone's LAN."""
+    m = _seed(tmp_path, vids=("111",))
+    with pytest.raises(ValueError):
+        transcribe.transcribe_all(m, endpoint="", api_key="k")
 
 
 def test_pending_excludes_image_only_posts(tmp_path):
