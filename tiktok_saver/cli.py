@@ -8,6 +8,7 @@
     tiktok-saver transcribe                # send downloaded videos to the GPU Whisper box
     tiktok-saver export-transcripts        # per-post transcript markdown for text indexing
     tiktok-saver index-frames              # embed video frames + slideshow images (SigLIP 2)
+    tiktok-saver wiki                      # compile per-collection wiki pages (headless claude)
     tiktok-saver search "query"            # visual+transcript search over the archive
     tiktok-saver status                    # counts by state; what's pending/gone/private
 """
@@ -277,6 +278,22 @@ def _cmd_search(args) -> int:
     return 0
 
 
+def _cmd_wiki(args) -> int:
+    """Compile one wiki page per collection (+ uncollected favorites) from
+    captions + transcripts via headless claude. Incremental; --force rewrites."""
+    from . import wiki
+
+    manifest = Manifest(_manifest_path(args.username, Path(args.out)))
+    wiki_dir = Path(args.wiki_dir) if args.wiki_dir else Path(args.out) / "wiki"
+    tally = wiki.compile_wiki(
+        manifest, wiki_dir, topics=args.topic, model=args.model,
+        force=args.force, claude_bin=args.claude_bin)
+    print("wiki tally:", ", ".join(f"{k}={v}" for k, v in sorted(tally.items())))
+    print(f"pages in {wiki_dir}")
+    manifest.close()
+    return 0 if tally["errors"] == 0 else 1
+
+
 def _cmd_status(args) -> int:
     out_dir = Path(args.out)
     path = _manifest_path(args.username, out_dir)
@@ -395,6 +412,21 @@ def build_parser() -> argparse.ArgumentParser:
                     help="TikTok username (default: _jdeck_)")
     sp.add_argument("-k", type=int, default=10, help="results to show (default: %(default)s)")
     sp.set_defaults(func=_cmd_search)
+
+    sp = sub.add_parser("wiki",
+                        help="compile per-collection wiki pages via headless claude")
+    add_common(sp)
+    sp.add_argument("--wiki-dir", default=None,
+                    help="page output dir (default: <out>/wiki)")
+    sp.add_argument("--topic", nargs="+", default=None, metavar="TOPIC",
+                    help="restrict to these collections (slug or name) — pilot mode")
+    sp.add_argument("--model", default="claude-sonnet-5",
+                    help="model for page synthesis (default: %(default)s)")
+    sp.add_argument("--force", action="store_true",
+                    help="rewrite pages whose file already exists")
+    sp.add_argument("--claude-bin", default="claude",
+                    help="claude CLI binary (default: %(default)s)")
+    sp.set_defaults(func=_cmd_wiki)
 
     sp = sub.add_parser("status", help="show manifest counts by surface and state")
     add_common(sp)
