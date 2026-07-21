@@ -199,7 +199,7 @@ def test_no_api_key_raises(tmp_path):
         transcribe.transcribe_all(m, api_key=None)
 
 
-def test_pending_excludes_image_posts(tmp_path):
+def test_pending_excludes_image_only_posts(tmp_path):
     m = _seed(tmp_path, vids=("111",))
     item = _video_item("999", unique="bob")
     item.pop("video")
@@ -210,6 +210,39 @@ def test_pending_excludes_image_posts(tmp_path):
     m.add_media_file("999", "image", 0, str(img), 3)
     m.commit()
     assert [r["video_id"] for r in m.pending_transcriptions()] == ["111"]
+
+
+def test_pending_includes_slideshow_audio(tmp_path):
+    """A slideshow's music/voiceover track (kind='audio') is transcribable;
+    its images are not. One row per post, pointing at the audio file."""
+    m = _seed(tmp_path, vids=("111",))
+    item = _video_item("999", unique="bob")
+    item.pop("video")
+    item["imagePost"] = {"images": [{"imageURL": {"urlList": ["http://i/0.jpg"]}}]}
+    m.upsert_post(item)
+    mp3 = tmp_path / "999.mp3"
+    mp3.write_bytes(b"mp3")
+    m.add_media_file("999", "audio", 0, str(mp3), 3)
+    m.add_media_file("999", "image", 1, str(tmp_path / "999_1.jpg"), 3)
+    m.commit()
+    rows = {r["video_id"]: r["local_path"] for r in m.pending_transcriptions()}
+    assert set(rows) == {"111", "999"}
+    assert rows["999"].endswith(".mp3")
+
+
+def test_pending_prefers_video_over_audio_single_row(tmp_path):
+    m = _seed(tmp_path, vids=("111",))
+    m.add_media_file("111", "audio", 0, str(tmp_path / "111.mp3"), 3)
+    m.commit()
+    rows = m.pending_transcriptions()
+    assert len(rows) == 1 and rows[0]["local_path"].endswith(".mp4")
+
+
+def test_content_type_by_suffix():
+    from pathlib import Path
+    from tiktok_saver.transcribe import _CONTENT_TYPES
+    assert _CONTENT_TYPES[Path("a.MP3").suffix.lower()] == "audio/mpeg"
+    assert _CONTENT_TYPES[Path("a.mp4").suffix.lower()] == "video/mp4"
 
 
 def test_transcript_export_rows_joins_collections(tmp_path):

@@ -41,13 +41,24 @@ class BoxDown(RuntimeError):
     """The GPU box stopped answering; the batch should stop, not spin."""
 
 
+# The box checks Content-Type against its allowlist; both these and the
+# application/octet-stream fallback are in the server's default set.
+_CONTENT_TYPES = {
+    ".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime",
+    ".mp3": "audio/mpeg", ".m4a": "audio/x-m4a", ".aac": "audio/aac",
+    ".ogg": "audio/ogg", ".wav": "audio/wav", ".flac": "audio/flac",
+}
+
+
 def _post_file(
     endpoint: str, api_key: str, path: Path, timeout_s: float
 ) -> requests.Response:
     # curl_cffi has no requests-style `files=`; its multipart API streams from
     # local_path without loading the file into memory.
     mp = CurlMime()
-    mp.addpart(name="file", content_type="video/mp4",
+    mp.addpart(name="file",
+               content_type=_CONTENT_TYPES.get(
+                   path.suffix.lower(), "application/octet-stream"),
                filename=path.name, local_path=str(path))
     try:
         return requests.post(

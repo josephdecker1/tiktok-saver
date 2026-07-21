@@ -403,15 +403,20 @@ class Manifest:
         return {r["video_id"] for r in self.conn.execute(q, tuple(args))}
 
     def pending_transcriptions(self, limit: int | None = None) -> list[sqlite3.Row]:
-        """Downloaded videos with no transcript row yet. One row per post
-        (media_files is UNIQUE(video_id, kind, num) and videos are single-file),
-        oldest saves first so a resumed backfill stays deterministic."""
+        """Posts with transcribable media (a video, or a slideshow's audio
+        track) and no transcript row yet. Exactly ONE file per post — video
+        preferred — oldest saves first so a resumed backfill stays
+        deterministic."""
         q = """
             SELECT p.video_id, p.author_unique_id, p.duration, mf.local_path
-            FROM media_files mf
-            JOIN posts p ON p.video_id = mf.video_id
-            LEFT JOIN transcripts t ON t.video_id = mf.video_id
-            WHERE mf.kind = 'video' AND t.video_id IS NULL
+            FROM posts p
+            JOIN media_files mf ON mf.rowid = (
+                SELECT m2.rowid FROM media_files m2
+                WHERE m2.video_id = p.video_id AND m2.kind IN ('video', 'audio')
+                ORDER BY CASE m2.kind WHEN 'video' THEN 0 ELSE 1 END, m2.num
+                LIMIT 1)
+            LEFT JOIN transcripts t ON t.video_id = p.video_id
+            WHERE t.video_id IS NULL
             ORDER BY p.first_seen_ts, p.video_id
         """
         args: tuple = ()

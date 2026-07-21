@@ -57,6 +57,14 @@ def extract_frames(
     result = run(ffmpeg_cmd(video_path, pattern, fps),
                  capture_output=True, text=True, timeout=300)
     if result.returncode != 0:
+        # A handful of TikToks carry color-space metadata the scale filter
+        # rejects ("Invalid color space"). Retry once without scaling — the
+        # embedding processor resizes anyway; native-res JPEGs just cost a
+        # little more temp disk.
+        cmd = [a for a in ffmpeg_cmd(video_path, pattern, fps)]
+        cmd[cmd.index("-vf") + 1] = f"fps={fps:.6f}"
+        result = run(cmd, capture_output=True, text=True, timeout=300)
+    if result.returncode != 0:
         raise RuntimeError(
             f"ffmpeg failed on {video_path.name}: {(result.stderr or '')[:300]}")
     out: list[tuple[float, Path]] = []
