@@ -121,3 +121,43 @@ def test_run_claude_salvages_preamble(monkeypatch):
 
     out = wiki._run_claude("p", "m", run=lambda *a, **k: R())
     assert out.startswith("# bread")
+
+
+def test_run_claude_pins_tool_lockdown():
+    """Captions/transcripts are untrusted input — the headless call MUST run
+    with all tools disabled. This pins the --tools "" flag so a refactor
+    cannot drop it silently."""
+    seen_argv = []
+
+    def fake_run(cmd, **kw):
+        seen_argv.extend(cmd)
+        class R:
+            returncode = 0
+            stderr = ""
+            stdout = "# x\n\nbody"
+        return R()
+
+    wiki._run_claude("prompt", "some-model", run=fake_run)
+    i = seen_argv.index("--tools")
+    assert seen_argv[i + 1] == ""
+
+
+def test_run_claude_strips_trailing_fence():
+    class R:
+        returncode = 0
+        stderr = ""
+        stdout = "```markdown\n# bread\n\nbody\n```"
+
+    out = wiki._run_claude("p", "m", run=lambda *a, **k: R())
+    assert out.startswith("# bread") and not out.rstrip().endswith("```")
+
+
+def test_slug_collision_fails_loudly(tmp_path):
+    m = _seed(tmp_path)
+    m.add_membership("222", "collection", "c2", "Bread!!", 0)   # also -> bread
+    m.commit()
+    with pytest.raises(RuntimeError, match="slug collision"):
+        wiki.compile_wiki(m, tmp_path / "wiki",
+                          run_claude=lambda *a: "# x\n\nb",
+                          progress=lambda s: None)
+    assert not (tmp_path / "wiki" / "bread.md").exists()        # no partial writes

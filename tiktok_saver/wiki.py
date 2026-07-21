@@ -88,6 +88,10 @@ def _run_claude(prompt: str, model: str, claude_bin: str = "claude",
         if idx == -1:
             raise RuntimeError(f"claude reply has no markdown heading: {body[:120]!r}")
         body = body[idx:]
+    # A fenced reply leaves its closing ``` after the salvage slice; these
+    # pages bypass the domains-only fence-stripper, so strip it here.
+    while body.rstrip().endswith("```"):
+        body = body.rstrip()[:-3].rstrip()
     return body
 
 
@@ -114,6 +118,16 @@ def compile_wiki(
         for cid, name, _n in manifest.collection_names()
     ]
     pages.append((UNCOLLECTED_SLUG, UNCOLLECTED_TITLE, None))
+
+    # Two collections normalizing to one slug would silently overwrite (or
+    # incremental-skip) a page — fail loudly before any writes instead.
+    seen_slugs: dict[str, str] = {}
+    for slug, title, _sid in pages:
+        if slug in seen_slugs:
+            raise RuntimeError(
+                f"slug collision: collections {seen_slugs[slug]!r} and "
+                f"{title!r} both map to {slug}.md — rename one folder")
+        seen_slugs[slug] = title
 
     if topics:
         wanted = {t.lower() for t in topics}
