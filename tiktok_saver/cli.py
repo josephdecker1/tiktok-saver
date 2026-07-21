@@ -5,7 +5,7 @@
     tiktok-saver download  --surface all   # fetch bytes for pending posts
     tiktok-saver run       --surface all   # enumerate + download in one pass
     tiktok-saver reconcile user_data.json  # optional: diff official export vs manifest
-    tiktok-saver transcribe                # send downloaded videos to the GPU Whisper box
+    tiktok-saver transcribe                # send downloaded videos to a Whisper server
     tiktok-saver export-transcripts        # per-post transcript markdown for text indexing
     tiktok-saver index-frames              # embed video frames + slideshow images (SigLIP 2)
     tiktok-saver wiki                      # compile per-collection wiki pages (headless claude)
@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -26,6 +27,15 @@ DEFAULT_OUT = Path.home() / "Downloads" / "TikTok-collections"
 
 def _manifest_path(username: str, out_dir: Path) -> Path:
     return out_dir / f"tt_manifest_{username}.db"
+
+
+def _infer_username(out_dir: Path) -> str | None:
+    """The username exactly when out_dir holds a single manifest — the common
+    single-account case, so `search "query"` works without repeating it."""
+    hits = sorted(out_dir.glob("tt_manifest_*.db"))
+    if len(hits) == 1:
+        return hits[0].stem[len("tt_manifest_"):]
+    return None
 
 
 def _cmd_login(args) -> int:
@@ -168,15 +178,20 @@ def _cmd_reconcile(args) -> int:
 
 
 def _cmd_transcribe(args) -> int:
-    """Send downloaded videos without a transcript to the local GPU Whisper box
-    and store the text in the manifest. Serial (the box takes one job at a
-    time), resumable (re-runs pick up exactly the posts still missing)."""
+    """Send downloaded videos without a transcript to a Whisper transcription
+    server and store the text in the manifest. Serial (one job at a time),
+    resumable (re-runs pick up exactly the posts still missing)."""
     from . import transcribe as tr
 
+    if not args.endpoint:
+        print("✗ no transcription server configured. Pass --endpoint or export "
+              f"${tr.ENDPOINT_ENV}. The expected API contract is documented in "
+              "README.md → Transcription.", file=sys.stderr)
+        return 2
     api_key = tr.resolve_api_key(args.api_key_env)
     if not api_key:
-        print(f"✗ no API key in ${args.api_key_env}. Export it first "
-              f"(GCP-SM condensr_backend_home_transcription-api-key).", file=sys.stderr)
+        print(f"✗ no API key in ${args.api_key_env}. Export it first (the value "
+              "your transcription server expects in X-API-Key).", file=sys.stderr)
         return 2
     out_dir = Path(args.out)
     manifest = Manifest(_manifest_path(args.username, out_dir))
@@ -252,7 +267,14 @@ def _cmd_search(args) -> int:
     snippet alongside."""
     from . import embed
 
-    manifest = Manifest(_manifest_path(args.username, Path(args.out)))
+    out_dir = Path(args.out)
+    username = args.username or _infer_username(out_dir)
+    if not username:
+        found = sorted(p.name for p in out_dir.glob("tt_manifest_*.db"))
+        detail = f"found: {', '.join(found)}" if found else f"no manifests in {out_dir}"
+        print(f"✗ pass a username — {detail}", file=sys.stderr)
+        return 2
+    manifest = Manifest(_manifest_path(username, out_dir))
     try:
         hits = embed.search(manifest, args.query, k=args.k)
     except RuntimeError as e:
@@ -381,10 +403,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=_cmd_reconcile)
 
     sp = sub.add_parser("transcribe",
-                        help="transcribe downloaded videos on the local GPU Whisper box")
+                        help="transcribe downloaded videos via a Whisper transcription server")
     add_common(sp)
-    sp.add_argument("--endpoint", default="http://10.0.0.50:8002",
-                    help="GPU box base URL (default: %(default)s)")
+    sp.add_argument("--endpoint", default=os.environ.get("TIKTOK_TRANSCRIBE_ENDPOINT"),
+                    help="transcription server base URL (default: $TIKTOK_TRANSCRIBE_ENDPOINT; "
+                         "API contract in README.md → Transcription)")
     sp.add_argument("--api-key-env", default="TRANSCRIPTION_API_KEY", metavar="VAR",
                     help="env var holding the X-API-Key value (default: %(default)s)")
     sp.add_argument("--limit", type=int, default=None,
@@ -408,8 +431,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("search", help="text search over the visual index")
     add_common(sp, username=False)
     sp.add_argument("query", help="what to look for, in plain words")
-    sp.add_argument("username", nargs="?", default="_jdeck_",
-                    help="TikTok username (default: _jdeck_)")
+    sp.add_argument("username", nargs="?", default=None,
+                    help="TikTok username (optional when --out holds exactly one manifest)")
     sp.add_argument("-k", type=int, default=10, help="results to show (default: %(default)s)")
     sp.set_defaults(func=_cmd_search)
 
