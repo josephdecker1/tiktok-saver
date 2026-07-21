@@ -95,6 +95,10 @@ CREATE TABLE IF NOT EXISTS frame_vectors (
     PRIMARY KEY (video_id, kind, ts)
 );
 
+CREATE VIRTUAL TABLE IF NOT EXISTS transcripts_fts USING fts5(
+    video_id UNINDEXED, text
+);
+
 CREATE TABLE IF NOT EXISTS visual_index (
     video_id        TEXT PRIMARY KEY,          -- marker: post fully embedded; written
     n_vectors       INTEGER,                   -- AFTER its vectors commit => resumable
@@ -312,6 +316,12 @@ class Manifest:
             """,
             (video_id, text, language, language_probability, audio_duration, model, _now()),
         )
+        # Mirror into the FTS index (delete+insert = FTS5's upsert).
+        self.conn.execute("DELETE FROM transcripts_fts WHERE video_id = ?", (video_id,))
+        if text:
+            self.conn.execute(
+                "INSERT INTO transcripts_fts (video_id, text) VALUES (?, ?)",
+                (video_id, text))
 
     def store_frame_vector(
         self, video_id: str, kind: str, ts: float, vector: bytes
@@ -465,6 +475,38 @@ class Manifest:
         posts = self.conn.execute("SELECT COUNT(*) FROM visual_index").fetchone()[0]
         vecs = self.conn.execute("SELECT COUNT(*) FROM frame_vectors").fetchone()[0]
         return {"posts": posts or 0, "vectors": vecs or 0}
+
+    def transcript_fts_matches(self, query: str, limit: int = 50) -> dict[str, float]:
+        """Posts whose transcript matches ANY query term: video_id -> positive
+        relevance (negated bm25; higher = better). Never raises on weird query
+        strings — a search that can't parse just contributes no transcript hits."""
+        self._sync_transcript_fts()
+        terms = [t.replace('"', "").strip() for t in query.split()]
+        terms = [t for t in terms if t]
+        if not terms:
+            return {}
+        match = " OR ".join(f'"{t}"' for t in terms)
+        try:
+            rows = self.conn.execute(
+                "SELECT video_id, bm25(transcripts_fts) AS r FROM transcripts_fts "
+                "WHERE transcripts_fts MATCH ? ORDER BY r LIMIT ?",
+                (match, limit))
+            return {r["video_id"]: -r["r"] for r in rows}
+        except sqlite3.OperationalError:
+            return {}
+
+    def _sync_transcript_fts(self) -> None:
+        """Self-healing backfill: transcripts written before the FTS table
+        existed (or by an older tool version) get indexed on first search."""
+        n_t = self.conn.execute(
+            "SELECT COUNT(*) FROM transcripts WHERE text != ''").fetchone()[0]
+        n_f = self.conn.execute("SELECT COUNT(*) FROM transcripts_fts").fetchone()[0]
+        if n_f != n_t:
+            self.conn.execute("DELETE FROM transcripts_fts")
+            self.conn.execute(
+                "INSERT INTO transcripts_fts (video_id, text) "
+                "SELECT video_id, text FROM transcripts WHERE text != ''")
+            self.conn.commit()
 
     def transcript_export_rows(self) -> list[sqlite3.Row]:
         """Everything the markdown export needs, one row per post with a

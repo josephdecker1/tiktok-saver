@@ -177,3 +177,94 @@ def test_search_joins_caption_and_transcript(tmp_path):
 def test_search_empty_index(tmp_path):
     m = Manifest(tmp_path / "t.db")
     assert embed.search(m, "x", k=5, query_vec=np.zeros(8)) == []
+
+
+def test_search_fts_bonus_exact(tmp_path):
+    """A spoken-but-not-shown query surfaces the post from `search`: the FTS
+    bonus lifts it above a visually-closer competitor, and the flag is set."""
+    m = Manifest(tmp_path / "t.db")
+    m.upsert_post(_video_item("spoken", unique="alice"))
+    m.upsert_post(_video_item("visual", unique="bob"))
+    m.set_transcript("spoken", "we cover quantum entanglement here", "en", 0.9, 30.0, "m")
+    q = np.zeros(8, dtype=np.float32); q[0] = 1.0
+    tiny = np.zeros(8, dtype=np.float16); tiny[0] = 0.1      # cos 0.1
+    mid = np.zeros(8, dtype=np.float16); mid[0] = 0.25       # cos 0.25
+    m.store_frame_vector("spoken", "frame", 0.0, tiny.tobytes())
+    m.store_frame_vector("visual", "frame", 0.0, mid.tobytes())
+    m.commit()
+
+    hits = embed.search(m, "quantum entanglement", k=2, query_vec=q)
+    # spoken: 0.1 + 0.2 bonus = 0.3 beats visual 0.25; flag set; no-hit unflagged
+    assert [h["video_id"] for h in hits] == ["spoken", "visual"]
+    assert hits[0]["transcript_hit"] is True
+    assert hits[0]["score"] == pytest.approx(0.1 + embed.FTS_BLEND_BONUS, abs=2e-3)
+    assert hits[1]["transcript_hit"] is False
+
+
+def test_fts_self_heals_preexisting_transcripts(tmp_path):
+    """Transcripts written before the FTS table existed are indexed on first
+    search (the live archive's 1,701 rows are exactly this case)."""
+    m = Manifest(tmp_path / "t.db")
+    m.upsert_post(_video_item("111"))
+    m.set_transcript("111", "sourdough scoring technique", "en", 0.9, 30.0, "m")
+    m.conn.execute("DELETE FROM transcripts_fts")            # simulate pre-FTS data
+    m.commit()
+    assert m.transcript_fts_matches("sourdough") == {} or True  # trigger sync
+    assert "111" in m.transcript_fts_matches("sourdough")
+
+
+def test_fts_weird_query_never_raises(tmp_path):
+    m = Manifest(tmp_path / "t.db")
+    m.set_transcript("111", "text", "en", 0.9, 30.0, "m")
+    m.commit()
+    assert m.transcript_fts_matches('AND OR NOT ( " * :') == {} or True
+    assert isinstance(m.transcript_fts_matches("(((("), dict)
+
+
+def test_index_cleans_tempdir_even_on_failure(tmp_path, monkeypatch):
+    """The per-post failure path must not leak the frames tempdir."""
+    import tempfile as _tf
+    made: list = []
+    real_mkdtemp = _tf.mkdtemp
+
+    def tracking_mkdtemp(*a, **kw):
+        d = real_mkdtemp(*a, **kw)
+        made.append(d)
+        return d
+
+    monkeypatch.setattr(embed.tempfile if hasattr(embed, "tempfile") else _tf,
+                        "mkdtemp", tracking_mkdtemp)
+    monkeypatch.setattr(embed.fr, "extract_frames",
+                        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("ffmpeg boom")))
+    m = Manifest(tmp_path / "t.db")
+    _seed_video(m, tmp_path, "111")
+    m.commit()
+    tally = embed.index_all(m, embedder=FakeEmbedder())
+    assert tally["errors"] == 1
+    import os
+    assert all(not os.path.isdir(d) for d in made)
+
+
+def test_extract_frames_colorspace_remux_fallback(tmp_path):
+    """First ffmpeg call fails with 'Invalid color space' -> remux via
+    hevc_metadata bsf -> extraction from the fixed copy succeeds."""
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        class R:
+            returncode = 0
+            stderr = ""
+        r = R()
+        if len(calls) == 1:                       # original extract fails
+            r.returncode = 1
+            r.stderr = "graph -1 input from stream 0:0: Invalid color space"
+        elif len(calls) == 2:                     # remux succeeds
+            assert "hevc_metadata" in " ".join(map(str, cmd))
+        else:                                     # extract from fixed copy
+            (tmp_path / "f_0001.jpg").write_bytes(b"jpg")
+        return r
+
+    out = frames.extract_frames(tmp_path / "v.mp4", 4.0, workdir=tmp_path, run=fake_run)
+    assert len(calls) == 3
+    assert [ts for ts, _ in out] == [0.0]

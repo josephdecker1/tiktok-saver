@@ -264,6 +264,8 @@ def _cmd_search(args) -> int:
         return 1
     for h in hits:
         loc = f"@{h['match_ts']:.0f}s" if h["match_kind"] == "frame" else f"slide {int(h['match_ts'])}"
+        if h.get("transcript_hit"):
+            loc += ", spoken"
         print(f"{h['score']:.3f}  {h['author'] or '?'} ({loc})  {h['canonical_url']}")
         if h["caption"]:
             print(f"       caption: {h['caption'][:120]}")

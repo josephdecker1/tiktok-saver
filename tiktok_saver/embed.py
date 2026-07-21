@@ -127,9 +127,9 @@ def index_all(
 
     for i, vid in enumerate(order, 1):
         rows = by_post[vid]
+        tmp: Path | None = None
         try:
             items: list[tuple[str, float, Path]] = []   # (kind, ts, path)
-            tmp: Path | None = None
             if rows[0]["media_kind"] == "video":
                 src = Path(rows[0]["local_path"])
                 if not src.is_file():
@@ -159,17 +159,26 @@ def index_all(
             manifest.commit()
             tally["posts"] += 1
             tally["vectors"] += n_stored
-            if tmp is not None:
-                shutil.rmtree(tmp, ignore_errors=True)
         except Exception as e:
             tally["errors"] += 1
             progress(f"  [{i}/{len(order)}] {vid}: FAILED ({type(e).__name__}: "
                      f"{str(e)[:150]}) — left pending")
             continue
+        finally:
+            # The failure path is the ANTICIPATED path (ffmpeg errors, corrupt
+            # images) — the tempdir must not outlive the post either way.
+            if tmp is not None:
+                shutil.rmtree(tmp, ignore_errors=True)
         if i % 25 == 0 or i == len(order):
             progress(f"  [{i}/{len(order)}] posts={tally['posts']} "
                      f"vectors={tally['vectors']} errors={tally['errors']}")
     return tally
+
+
+# A transcript FTS hit adds this to the post's frame score. SigLIP cosines on
+# this corpus sit around 0.10-0.25, so a spoken-word match reliably lifts a
+# post into the visible top-k while frame similarity still orders the rest.
+FTS_BLEND_BONUS = 0.2
 
 
 def search(
@@ -179,7 +188,9 @@ def search(
     embedder: "Embedder | None" = None,
     query_vec=None,
 ) -> list[dict]:
-    """Top-k posts by MAX frame/slide cosine vs the query text.
+    """Top-k posts by MAX frame/slide cosine vs the query text, blended with
+    transcript full-text hits (a post whose transcript matches the query gets
+    FTS_BLEND_BONUS on top of its frame score).
 
     ``query_vec`` (a pre-normalized (EMBED_DIM,) array) bypasses the model —
     the scoring path is then pure numpy, which is what the tests exercise.
@@ -204,6 +215,11 @@ def search(
         if cur is None or s > cur[0]:
             best[r["video_id"]] = (float(s), r["kind"], r["ts"])
 
+    fts = manifest.transcript_fts_matches(query)
+    for vid in fts:
+        score, kind, ts = best.get(vid, (0.0, "transcript", 0.0))
+        best[vid] = (score + FTS_BLEND_BONUS, kind, ts)
+
     top = sorted(best.items(), key=lambda kv: kv[1][0], reverse=True)[:k]
     out = []
     for vid, (score, kind, ts) in top:
@@ -222,6 +238,7 @@ def search(
             "score": score,
             "match_kind": kind,
             "match_ts": ts,
+            "transcript_hit": vid in fts,
             "author": (post["author_nickname"] or post["author_unique_id"]) if post else None,
             "caption": post["caption"] if post else None,
             "canonical_url": post["canonical_url"] if post else None,
