@@ -77,6 +77,35 @@ CREATE TABLE IF NOT EXISTS download_status (
     last_attempt_ts INTEGER
 );
 
+CREATE TABLE IF NOT EXISTS transcripts (
+    video_id        TEXT PRIMARY KEY,          -- transcription is per-post, like download
+    text            TEXT,                      -- '' is a valid result (music-only audio)
+    language        TEXT,
+    language_probability REAL,
+    audio_duration  REAL,
+    model           TEXT,                      -- e.g. 'faster-whisper-distil-large-v3'
+    transcribed_ts  INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS frame_vectors (
+    video_id        TEXT,
+    kind            TEXT,                      -- 'frame' (video) | 'slide' (image post)
+    ts              REAL,                      -- frame timestamp s, or slide index
+    vector          BLOB,                      -- float16 little-endian, L2-normalized
+    PRIMARY KEY (video_id, kind, ts)
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS transcripts_fts USING fts5(
+    video_id UNINDEXED, text
+);
+
+CREATE TABLE IF NOT EXISTS visual_index (
+    video_id        TEXT PRIMARY KEY,          -- marker: post fully embedded; written
+    n_vectors       INTEGER,                   -- AFTER its vectors commit => resumable
+    model           TEXT,
+    indexed_ts      INTEGER
+);
+
 CREATE INDEX IF NOT EXISTS idx_membership_video   ON memberships(video_id);
 CREATE INDEX IF NOT EXISTS idx_membership_source  ON memberships(source_type, source_id);
 CREATE INDEX IF NOT EXISTS idx_status_state       ON download_status(state);
@@ -263,6 +292,61 @@ class Manifest:
             (video_id, kind, num, local_path, sha256, filesize, _now()),
         )
 
+    def set_transcript(
+        self,
+        video_id: str,
+        text: str,
+        language: str | None,
+        language_probability: float | None,
+        audio_duration: float | None,
+        model: str | None,
+    ) -> None:
+        """Record a transcription result. Empty text is stored (it means the
+        audio carried no recognizable speech) so the post is done, not retried."""
+        self.conn.execute(
+            """
+            INSERT INTO transcripts (video_id, text, language, language_probability,
+                audio_duration, model, transcribed_ts)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(video_id) DO UPDATE SET
+                text=excluded.text, language=excluded.language,
+                language_probability=excluded.language_probability,
+                audio_duration=excluded.audio_duration, model=excluded.model,
+                transcribed_ts=excluded.transcribed_ts
+            """,
+            (video_id, text, language, language_probability, audio_duration, model, _now()),
+        )
+        # Mirror into the FTS index (delete+insert = FTS5's upsert).
+        self.conn.execute("DELETE FROM transcripts_fts WHERE video_id = ?", (video_id,))
+        if text:
+            self.conn.execute(
+                "INSERT INTO transcripts_fts (video_id, text) VALUES (?, ?)",
+                (video_id, text))
+
+    def store_frame_vector(
+        self, video_id: str, kind: str, ts: float, vector: bytes
+    ) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO frame_vectors (video_id, kind, ts, vector)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(video_id, kind, ts) DO UPDATE SET vector=excluded.vector
+            """,
+            (video_id, kind, ts, vector),
+        )
+
+    def mark_visual_indexed(self, video_id: str, n_vectors: int, model: str) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO visual_index (video_id, n_vectors, model, indexed_ts)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(video_id) DO UPDATE SET
+                n_vectors=excluded.n_vectors, model=excluded.model,
+                indexed_ts=excluded.indexed_ts
+            """,
+            (video_id, n_vectors, model, _now()),
+        )
+
     def commit(self) -> None:
         self.conn.commit()
 
@@ -327,6 +411,119 @@ class Manifest:
             q += " AND source_id=?"
             args.append(source_id)
         return {r["video_id"] for r in self.conn.execute(q, tuple(args))}
+
+    def pending_transcriptions(self, limit: int | None = None) -> list[sqlite3.Row]:
+        """Posts with transcribable media (a video, or a slideshow's audio
+        track) and no transcript row yet. Exactly ONE file per post — video
+        preferred — oldest saves first so a resumed backfill stays
+        deterministic."""
+        q = """
+            SELECT p.video_id, p.author_unique_id, p.duration, mf.local_path
+            FROM posts p
+            JOIN media_files mf ON mf.rowid = (
+                SELECT m2.rowid FROM media_files m2
+                WHERE m2.video_id = p.video_id AND m2.kind IN ('video', 'audio')
+                ORDER BY CASE m2.kind WHEN 'video' THEN 0 ELSE 1 END, m2.num
+                LIMIT 1)
+            LEFT JOIN transcripts t ON t.video_id = p.video_id
+            WHERE t.video_id IS NULL
+            ORDER BY p.first_seen_ts, p.video_id
+        """
+        args: tuple = ()
+        if limit is not None:
+            q += " LIMIT ?"
+            args = (limit,)
+        return list(self.conn.execute(q, args))
+
+    def transcript_counts(self) -> dict[str, int]:
+        row = self.conn.execute(
+            "SELECT COUNT(*) n, SUM(text = '') empty FROM transcripts"
+        ).fetchone()
+        return {"transcribed": row["n"] or 0, "empty": row["empty"] or 0}
+
+    def pending_visual_index(self, limit: int | None = None) -> list[sqlite3.Row]:
+        """Downloaded media not yet in the visual index. One row per FILE:
+        a video post yields its single mp4 (kind 'video'), an image post one row
+        per slideshow image (kind 'image', num = slide index)."""
+        q = """
+            SELECT p.video_id, p.post_type, p.duration,
+                   mf.kind AS media_kind, mf.num, mf.local_path
+            FROM media_files mf
+            JOIN posts p ON p.video_id = mf.video_id
+            LEFT JOIN visual_index vi ON vi.video_id = mf.video_id
+            WHERE mf.kind IN ('video', 'image') AND vi.video_id IS NULL
+            ORDER BY p.first_seen_ts, p.video_id, mf.num
+        """
+        rows = list(self.conn.execute(q))
+        if limit is not None:
+            # Limit counts POSTS, not files, so slideshows never split.
+            keep: list[sqlite3.Row] = []
+            posts_seen: set[str] = set()
+            for r in rows:
+                if r["video_id"] not in posts_seen and len(posts_seen) >= limit:
+                    continue
+                posts_seen.add(r["video_id"])
+                keep.append(r)
+            rows = keep
+        return rows
+
+    def all_frame_vectors(self) -> list[sqlite3.Row]:
+        return list(self.conn.execute(
+            "SELECT video_id, kind, ts, vector FROM frame_vectors"))
+
+    def visual_index_counts(self) -> dict[str, int]:
+        posts = self.conn.execute("SELECT COUNT(*) FROM visual_index").fetchone()[0]
+        vecs = self.conn.execute("SELECT COUNT(*) FROM frame_vectors").fetchone()[0]
+        return {"posts": posts or 0, "vectors": vecs or 0}
+
+    def transcript_fts_matches(self, query: str, limit: int = 50) -> dict[str, float]:
+        """Posts whose transcript matches ANY query term: video_id -> positive
+        relevance (negated bm25; higher = better). Never raises on weird query
+        strings — a search that can't parse just contributes no transcript hits."""
+        self._sync_transcript_fts()
+        terms = [t.replace('"', "").strip() for t in query.split()]
+        terms = [t for t in terms if t]
+        if not terms:
+            return {}
+        match = " OR ".join(f'"{t}"' for t in terms)
+        try:
+            rows = self.conn.execute(
+                "SELECT video_id, bm25(transcripts_fts) AS r FROM transcripts_fts "
+                "WHERE transcripts_fts MATCH ? ORDER BY r LIMIT ?",
+                (match, limit))
+            return {r["video_id"]: -r["r"] for r in rows}
+        except sqlite3.OperationalError:
+            return {}
+
+    def _sync_transcript_fts(self) -> None:
+        """Self-healing backfill: transcripts written before the FTS table
+        existed (or by an older tool version) get indexed on first search."""
+        n_t = self.conn.execute(
+            "SELECT COUNT(*) FROM transcripts WHERE text != ''").fetchone()[0]
+        n_f = self.conn.execute("SELECT COUNT(*) FROM transcripts_fts").fetchone()[0]
+        if n_f != n_t:
+            self.conn.execute("DELETE FROM transcripts_fts")
+            self.conn.execute(
+                "INSERT INTO transcripts_fts (video_id, text) "
+                "SELECT video_id, text FROM transcripts WHERE text != ''")
+            self.conn.commit()
+
+    def transcript_export_rows(self) -> list[sqlite3.Row]:
+        """Everything the markdown export needs, one row per post with a
+        non-empty transcript; collection names pre-joined."""
+        return list(self.conn.execute(
+            """
+            SELECT p.video_id, p.author_nickname, p.author_unique_id, p.caption,
+                   p.canonical_url, p.duration, t.text, t.language,
+                   (SELECT GROUP_CONCAT(m.source_name, ', ')
+                    FROM memberships m
+                    WHERE m.video_id = p.video_id AND m.source_type = 'collection')
+                   AS collections
+            FROM transcripts t
+            JOIN posts p ON p.video_id = t.video_id
+            WHERE t.text != ''
+            ORDER BY p.first_seen_ts
+            """))
 
     def all_canonical_urls(self) -> set[str]:
         rows = self.conn.execute(

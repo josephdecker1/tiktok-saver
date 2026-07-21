@@ -11,12 +11,23 @@ dependencies = [
     "curl_cffi>=0.7",
 ]
 
+[project.optional-dependencies]
+# Frame/slideshow embedding (SigLIP 2 on MPS). Heavy — install only where the
+# visual index is built: uv tool install --editable ".[embed]"
+embed = [
+    "torch>=2.4",
+    "transformers>=4.53",
+    "pillow>=10",
+    "numpy>=1.26",
+]
+
 [project.scripts]
 tiktok-saver = "tiktok_saver.cli:main"
 
 [dependency-groups]
 dev = [
     "pytest>=8.3",
+    "numpy>=1.26",
 ]
 
 [build-system]

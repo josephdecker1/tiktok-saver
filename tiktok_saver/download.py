@@ -44,6 +44,8 @@ _GALLERY_DL_BASE = [
     "--option", "extractor.tiktok.photos=true",
 ]
 
+_AUDIO_SUFFIXES = {".mp3", ".m4a", ".aac", ".ogg", ".opus", ".wav"}
+
 
 def _classify(stderr: str) -> str:
     s = stderr.lower()
@@ -161,7 +163,12 @@ def _download_photo(vid, url, photo_dir, cookies_txt, manifest: Manifest, log) -
         files = sorted(dest.glob("*")) if dest.exists() else []
         for num, f in enumerate(files):
             if f.is_file():
-                manifest.add_media_file(vid, "image", num, str(f), f.stat().st_size)
+                # gallery-dl also drops the slideshow's music track into the
+                # dir — record it as audio, not image (a PIL-bound consumer
+                # choking on an mp3 took out the whole visual index for
+                # slideshows before this distinction existed).
+                kind = "audio" if f.suffix.lower() in _AUDIO_SUFFIXES else "image"
+                manifest.add_media_file(vid, kind, num, str(f), f.stat().st_size)
         if files:
             log(f"  ✓ photo {vid} ({len(files)} image(s))")
             return "done"

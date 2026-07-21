@@ -85,3 +85,27 @@ def test_videos_and_photos_are_siblings(tmp_path):
     assert (base / "photos").is_dir()
     assert not (base / "videos" / "photos").exists()   # no longer nested
     m.close()
+
+
+def test_download_photo_records_music_as_audio(tmp_path, monkeypatch):
+    """gallery-dl drops the slideshow's music track into the dir; it must be
+    recorded kind='audio' so PIL-bound consumers never receive an mp3."""
+    from tiktok_saver import download as dl
+
+    m = Manifest(tmp_path / "t.db")
+    dest = tmp_path / "photos" / "999"
+    dest.mkdir(parents=True)
+    (dest / "999 song.mp3").write_bytes(b"mp3")
+    (dest / "999_01 slide.jpg").write_bytes(b"jpg")
+
+    class R:
+        returncode = 0
+        stderr = ""
+
+    monkeypatch.setattr(dl.subprocess, "run", lambda *a, **k: R())
+    state = dl._download_photo(
+        "999", "http://u", tmp_path / "photos", "c.txt", m, lambda *_: None)
+    assert state == "done"
+    kinds = {r["local_path"].rsplit(".", 1)[-1]: r["kind"]
+             for r in m.conn.execute("SELECT kind, local_path FROM media_files")}
+    assert kinds == {"mp3": "audio", "jpg": "image"}
